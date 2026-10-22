@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>共享日曆</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="auth" class="auth hidden">
+  <form id="auth-form" class="auth-card">
+    <h1>共享日曆</h1>
+    <div class="tabs">
+      <button type="button" data-mode="login" class="active">登入</button>
+      <button type="button" data-mode="signup">註冊</button>
+    </div>
+    <label>Email<input name="email" type="email" autocomplete="username" required></label>
+    <label class="only-signup hidden">姓名<input name="name" autocomplete="person-name"></label>
+    <label>密碼<input name="password" type="password" autocomplete="current-password" required minlength="8"></label>
+    <button type="submit" class="primary">進入</button>
+    <p id="auth-msg" class="msg"></p>
+  </form>
+</div>
+
+<div id="app" class="app hidden">
+  <header class="topbar">
+    <button id="prev" class="icon" title="上一個月">‹</button>
+    <h2 id="month-label"></h2>
+    <button id="next" class="icon" title="下一個月">›</button>
+    <button id="today">今天</button>
+    <span class="spacer"></span>
+    <button id="open-add" class="primary">新增行程</button>
+    <button id="open-batch">批次匯入</button>
+    <button id="open-cal">日曆／邀請</button>
+    <button id="open-sub">手機訂閱</button>
+    <button id="logout">退出</button>
+  </header>
+
+  <div class="body">
+    <aside class="side">
+      <h3>我的日曆</h3>
+      <ul id="cal-list" class="cal-list"></ul>
+      <h3>標籤</h3>
+      <ul id="label-list" class="label-list"></ul>
+    </aside>
+
+    <main class="calendar">
+      <div class="weekdays" id="weekdays"></div>
+      <div class="grid" id="grid"></div>
+    </main>
+
+    <section class="panel" id="panel">
+      <div class="panel-head">
+        <h3 id="panel-title">选择日期</h3>
+        <button id="panel-close" class="icon" title="收合">×</button>
+      </div>
+      <div id="panel-body" class="panel-body"></div>
+    </section>
+  </div>
+</div>
+
+<dialog id="dlg-add">
+  <form id="add-form" method="dialog">
+    <h3>新增行程</h3>
+    <label>標題<input name="title" required maxlength="200"></label>
+    <div class="row">
+      <label>日期<input name="date" type="date" required></label>
+      <label class="chk"><input name="all_day" type="checkbox"> 全天</label>
+    </div>
+    <div class="row">
+      <label>開始<input name="start" type="time" value="19:00"></label>
+      <label>結束<input name="end" type="time" value="20:00"></label>
+    </div>
+    <div class="row">
+      <label>重複
+        <select name="repeat">
+          <option value="">單次</option>
+          <option value="DAILY">每天</option>
+          <option value="WEEKLY">每週</option>
+          <option value="BIWEEKLY">每兩週</option>
+          <option value="MONTHLY">每月</option>
+          <option value="YEARLY">每年</option>
+        </select>
+      </label>
+      <label>標籤<select name="label_id"></select></label>
+    </div>
+    <label>通知
+      <select name="reminder">
+        <option value="">不通知</option>
+        <option value="5">5 分鐘前</option>
+        <option value="15">15 分鐘前</option>
+        <option value="30" selected>30 分鐘前</option>
+        <option value="60">1 小時前</option>
+        <option value="1440">1 天前</option>
+      </select>
+    </label>
+    <label>地點<input name="location" maxlength="200"></label>
+    <label>備註<textarea name="note" rows="3" maxlength="2000"></textarea></label>
+    <div class="actions">
+      <button type="button" id="add-cancel">取消</button>
+      <button type="submit" class="primary">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-batch">
+  <h3>批次匯入</h3>
+  <p class="hint">一行一筆：<code>2026-11-05 14:00-15:00 大提琴課</code>，或 <code>2026-11-05 全天 奶奶生日</code>。
+  結尾可加 <code>每週</code>、<code>每兩週</code>、<code>每月</code>、<code>每年</code> 建立重複。</p>
+  <label>目標日曆<select id="batch-cal"></select></label>
+  <textarea id="batch-text" rows="10" placeholder="2026-11-05 14:00-15:00 大提琴課"></textarea>
+  <p id="batch-preview" class="msg"></p>
+  <div class="actions">
+    <button type="button" id="batch-cancel">取消</button>
+    <button type="button" id="batch-preview-btn">預覽</button>
+    <button type="button" id="batch-run" class="primary">送入日曆</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-cal">
+  <h3>日曆與成員</h3>
+  <label>新日曆名稱<input id="new-cal-name" maxlength="60"></label>
+  <button type="button" id="create-cal" class="primary">建立日曆</button>
+  <hr>
+  <p class="hint">邀請別人加入你的日曆（只有擁有者可產生邀請碼）</p>
+  <div class="row"><select id="invite-cal"></select><button type="button" id="gen-invite">產生邀請碼</button></div>
+  <p id="invite-code" class="code"></p>
+  <hr>
+  <p class="hint">用邀請碼加入別人的日曆</p>
+  <div class="row"><input id="join-code" maxlength="16" placeholder="ABCDEFGHJK"><button type="button" id="join">加入</button></div>
+  <div class="actions"><button type="button" id="cal-close">關閉</button></div>
+</dialog>
+
+<dialog id="dlg-sub">
+  <h3>手機日曆訂閱</h3>
+  <p class="hint">複製網址後，在 iPhone 的「加入曆日 → 從訂閱」或 Android 的 DAVx⁵ 貼上。
+  這是<strong>唯讀</strong>連結：拿到網址的人都能讀這個日曆，請把它當成密碼保管。</p>
+  <label>日曆<select id="sub-cal"></select></label>
+  <button type="button" id="sub-make" class="primary">產生訂閱網址</button>
+  <input id="sub-url" readonly>
+  <div class="actions"><button type="button" id="sub-close">關閉</button></div>
+</dialog>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

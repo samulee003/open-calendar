@@ -1,0 +1,14 @@
+{
+  "name": "shared-calendar",
+  "version": "0.1.0",
+  "description": "Self-hosted shared calendar with events, recurrence, labels, comments and reactions. Zero runtime dependencies.",
+  "type": "module",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "start": "node src/server.ts",
+    "selftest": "node scripts/selftest.ts",
+    "test": "node scripts/test-rrule.ts && node scripts/test-import.ts && node scripts/test-e2e-import.ts && node scripts/selftest.ts",
+    "import": "node scripts/import-timetree.ts"
+  },
+  "license": "AGPL-3.0-only"
+}
