@@ -9,6 +9,9 @@
 
 ## 跑起來
 
+原始碼是 `.ts`,由 Node 直接執行(沒有 build 步驟)。**需要 Node 24+**;
+若你的 `node` 是 22.17 之類較舊的版本,`.ts` 會報 `ERR_UNKNOWN_FILE_EXTENSION`。
+
 ```bash
 node src/server.ts
 # → shared-calendar listening on http://127.0.0.1:8787
@@ -16,15 +19,24 @@ node src/server.ts
 
 打開 http://127.0.0.1:8787 註冊第一個帳號,系統會自動建立你的個人日曆與三個標籤。
 
+本機若 24 版是解壓在 `D:\rea-toolchain`,把它放在 PATH 最前面即可:
+
+```bash
+export PATH="/d/rea-toolchain/node-v24.18.0-win-x64:$PATH"
+```
+
 驗證實作是否完好(它真的啟動伺服器、走完整 HTTP 流程,不是單元測試的模擬):
 
 ```bash
-npm test                     # 四組一次跑完
-node scripts/test-rrule.ts   # 重複規則引擎(含 +8 與跨 DST 案例)
-node scripts/test-import.ts  # CSV 匯入解析器
+bash scripts/check.sh            # 四組全跑,NODE=... 可指定 node 執行檔
+node scripts/test-rrule.ts       # 重複規則引擎(含 +8 與跨 DST 案例)
+node scripts/test-import.ts      # CSV 匯入解析器
 node scripts/test-e2e-import.ts  # 真啟動伺服器 + 真 spawn CLI 匯入 examples/lessons.csv
-node scripts/selftest.ts     # 端對端:鑑權、成員、批次、重複、例外、留言、按讚、ICS 結構驗證
+node scripts/selftest.ts         # 端對端:鑑權、成員、批次、重複、例外、留言、按讚、ICS 結構驗證
 ```
+
+`npm test` / `npm start` 只有在你 PATH 上的 `node` 就是 24+ 時會通;
+不然請用上面的 `scripts/check.sh`。
 
 ## 它能做什麼
 
