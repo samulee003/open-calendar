@@ -39,8 +39,9 @@ if (!file || !arg('email') || !arg('password') || !arg('calendar')) {
     console.log('沒有可匯入的列');
     process.exitCode = 1;
   } else if (flag('dry-run')) {
-    console.log(`[dry-run] ${events.length} 筆可匯入：`);
-    for (const e of events.slice(0, 10)) console.log(`  ${new Date(e.start_at).toISOString().slice(0, 16).replace('T', ' ')} ${e.title}${e.rrule ? ` (${e.rrule})` : ''}`);
+    console.log(`[dry-run] ${events.length} 筆可匯入（時間為本機時區）：`);
+    const local = (ms: number) => new Date(ms).toLocaleString('sv-SE').slice(0, 16);
+    for (const e of events.slice(0, 10)) console.log(`  ${local(e.start_at)} ${e.title}${e.rrule ? ` (${e.rrule})` : ''}`);
     if (events.length > 10) console.log(`  …共 ${events.length} 筆`);
   } else {
     const login = await fetch(`${base}/api/login`, {
