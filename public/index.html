@@ -52,6 +52,11 @@
     </aside>
 
     <main class="calendar">
+      <form id="quick-form" class="quick" autocomplete="off">
+        <input id="quick-input" name="text" placeholder="一句話新增：明天下午3點看牙醫 / 每週四 19:00 鋼琴課 / 10月30日 全天 旅行" maxlength="200">
+        <button type="submit" class="primary">加入</button>
+      </form>
+      <div id="quick-preview" class="quick-preview hidden"></div>
       <div class="weekdays" id="weekdays"></div>
       <div class="grid" id="grid"></div>
     </main>

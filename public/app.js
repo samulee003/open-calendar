@@ -40,6 +40,49 @@ const hhmm = (ms) => new Intl.DateTimeFormat('zh-TW', { timeZone: TZ, hour: '2-d
 
 const state = { me: null, calendars: [], activeCal: null, labels: [], events: [], byDay: new Map(), y: 0, m: 0, sel: null, labelFilter: null, editing: null };
 
+// ---------- quick add (natural language) ----------
+$('#quick-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = $('#quick-input');
+  const text = input.value.trim();
+  if (!text) return;
+  const box = $('#quick-preview');
+  box.classList.remove('hidden');
+  box.textContent = '解析中…';
+  try {
+    const out = await api(`/api/calendars/${state.activeCal}/quick-add`, { method: 'POST', body: { text } });
+    if (out.created) {
+      input.value = '';
+      box.textContent = `已加入：${out.parsed.title}`;
+      await renderMonth();
+      setTimeout(() => box.classList.add('hidden'), 1800);
+      return;
+    }
+    const p = out.parsed;
+    const when = out.display;
+    box.textContent = '';
+    box.append(
+      el('div', { text: `${p.confidence === 'low' ? '我不確定：' + p.unparsed.join('、') : '請確認'}：${p.title}` }),
+      el('div', { class: 'hint', text: `${when}${p.rrule ? `・${ruleText(p.rrule)}` : ''}${p.unparsed.length ? `・未理解：${p.unparsed.join('、')}` : ''}` }),
+      el('div', { class: 'quick-actions' },
+        el('button', {
+          class: 'primary', text: '就這樣建立',
+          onclick: async () => {
+            await api(`/api/calendars/${state.activeCal}/quick-add`, { method: 'POST', body: { text, preview: false, confirm: true } });
+            input.value = '';
+            box.classList.add('hidden');
+            await renderMonth();
+          },
+        }),
+        el('button', { text: '改成表單填', onclick: () => { $('#dlg-add').showModal(); box.classList.add('hidden'); } }),
+        el('button', { text: '取消', onclick: () => box.classList.add('hidden') }),
+      ),
+    );
+  } catch (err) {
+    box.textContent = `解析失敗：${err.message}`;
+  }
+});
+
 // ---------- auth ----------
 function showAuth(msg = '') {
   $('#auth').classList.remove('hidden');

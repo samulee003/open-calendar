@@ -2,6 +2,7 @@ import type { Store, Row } from './db.ts';
 import { expand, parseRRule } from './rrule.ts';
 import { icsForCalendar } from './ics.ts';
 import { dayKey, isValidZone, wallParts } from './tz.ts';
+import { parseQuickAdd } from './nlp.ts';
 import {
   newId, randomCode, hashPass, verifyPass, createSession, userByToken, safeEqual,
 } from './auth.ts';
@@ -308,6 +309,36 @@ export const routes = {
     mustView(ctx, String(l.calendar_id));
     ctx.store.run('delete from labels where id = ?', ctx.params.id);
     return { ok: true };
+  },
+
+  // Natural-language quick add: "明天下午3點看牙醫" -> one event, or a preview when
+  // the sentence lacks a date/time (so the caller can ask instead of guessing).
+  'POST /api/calendars/:id/quick-add': (ctx: Ctx) => {
+    const u = needUser(ctx);
+    mustView(ctx, ctx.params.id);
+    const text = String(ctx.body?.text ?? '').trim();
+    if (!text) throw new HttpError(400, 'text_required');
+    const tz = isValidZone(ctx.body?.tz) ? String(ctx.body.tz) : String(u.tz ?? 'UTC');
+    const parsed = parseQuickAdd(text, { now: new Date(), tz });
+    const w = wallParts(parsed.start_at, tz);
+    const display = parsed.all_day
+      ? `${w.y}-${String(w.mo).padStart(2, '0')}-${String(w.d).padStart(2, '0')} 全天`
+      : `${w.y}-${String(w.mo).padStart(2, '0')}-${String(w.d).padStart(2, '0')} ${String(w.hh).padStart(2, '0')}:${String(w.mi).padStart(2, '0')}`;
+    const payload = {
+      title: parsed.title,
+      all_day: parsed.all_day,
+      start_at: parsed.start_at,
+      end_at: parsed.end_at,
+      rrule: parsed.rrule,
+      tz,
+    };
+    // Only a high-confidence parse is created without asking; anything the parser had
+    // to assume (missing date or time) comes back for confirmation.
+    if (ctx.body?.confirm !== true && parsed.confidence !== 'high') {
+      return { needs_confirmation: true, parsed, display, event: payload };
+    }
+    const id = insertEvent(ctx, ctx.params.id, normalizeEvent(payload, tz), String(u.id));
+    return { created: id, parsed, display };
   },
 
   'GET /api/calendars/:id/events': (ctx: Ctx) => {

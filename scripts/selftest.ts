@@ -228,6 +228,19 @@ ok('ics carries a VALARM for the 30-minute reminder',
 ok('VALARM sits inside a VEVENT, not after it',
   body.indexOf('BEGIN:VALARM') > body.indexOf('BEGIN:VEVENT') && body.indexOf('END:VALARM') < body.lastIndexOf('END:VEVENT'));
 
+// ---- natural-language quick add ----
+const qa = await req('POST', `/api/calendars/${cid}/quick-add`, { text: '明天 下午3點 看牙醫' }, ca);
+ok('quick-add creates a confident parse', qa.status === 200 && !!qa.data.created, JSON.stringify(qa.data).slice(0, 200));
+const qaList = await req('GET', `/api/calendars/${cid}/events?from=${Date.now() - 86400000}&to=${Date.now() + 8 * 86400000}`, undefined, ca);
+ok('quick-add event is visible', qaList.data.some((r: any) => r.title === '看牙醫'));
+const vague = await req('POST', `/api/calendars/${cid}/quick-add`, { text: '買牛奶' }, ca);
+ok('vague input asks instead of creating', vague.status === 200 && vague.data.needs_confirmation === true && !vague.data.created,
+  JSON.stringify(vague.data).slice(0, 200));
+ok('vague input is not silently written', !(await req('GET', `/api/calendars/${cid}/events?from=${Date.now() - 86400000}&to=${Date.now() + 8 * 86400000}`, undefined, ca))
+  .data.some((r: any) => r.title === '買牛奶'));
+const confirmCreate = await req('POST', `/api/calendars/${cid}/quick-add`, { text: '買牛奶', confirm: true }, ca);
+ok('confirm creates the assumed event', confirmCreate.status === 200 && !!confirmCreate.data.created);
+
 // ---- security headers ----
 const headRes = await fetch(`${base}/api/me`, { headers: { cookie: ca } });
 ok('api sends nosniff', headRes.headers.get('x-content-type-options') === 'nosniff');
