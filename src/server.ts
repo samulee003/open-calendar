@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { freshStore, type Store, type Row } from './db.ts';
-import { parseCookies, sessionCookie, clearCookie, userByToken } from './auth.ts';
+import { parseCookies, sessionCookie, clearCookie, userByToken, userByAgentToken } from './auth.ts';
 import { routes } from './api.ts';
 
 const HERE = resolve(fileURLToPath(new URL('.', import.meta.url)));
@@ -82,7 +82,9 @@ export function makeServer(store: Store) {
     }
 
     const cookies = parseCookies(req.headers.cookie);
-    let user: Row | null = userByToken(store, cookies.sid) as Row | null;
+    const bearer = /^Bearer (.+)$/i.exec(String(req.headers.authorization ?? ''))?.[1];
+    // A CLI/MCP agent authenticates with a long-lived agent token instead of a cookie.
+    let user: Row | null = (userByToken(store, cookies.sid) ?? userByAgentToken(store, bearer)) as Row | null;
     // Trust X-Forwarded-For only behind a proxy you control; otherwise a client can
     // rotate the header to dodge the per-IP login limit.
     const forwarded = process.env.TRUST_PROXY === '1'

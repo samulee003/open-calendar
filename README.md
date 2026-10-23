@@ -28,10 +28,12 @@ export PATH="/d/rea-toolchain/node-v24.18.0-win-x64:$PATH"
 驗證實作是否完好(它真的啟動伺服器、走完整 HTTP 流程,不是單元測試的模擬):
 
 ```bash
-bash scripts/check.sh            # 四組全跑,NODE=... 可指定 node 執行檔
+bash scripts/check.sh            # 全部測試,NODE=... 可指定 node 執行檔
+node scripts/test-nlp.ts         # 中文自然语言解析(quick add)
 node scripts/test-rrule.ts       # 重複規則引擎(含 +8 與跨 DST 案例)
 node scripts/test-import.ts      # CSV 匯入解析器
 node scripts/test-e2e-import.ts  # 真啟動伺服器 + 真 spawn CLI 匯入 examples/lessons.csv
+node scripts/test-agent.ts       # agent 面:token、CLI、MCP server(真子进程)
 node scripts/selftest.ts         # 端對端:鑑權、成員、批次、重複、例外、留言、按讚、ICS 結構驗證
 ```
 
@@ -101,9 +103,79 @@ Service worker **只快取介面**,不快取 `/api`、`/ics` —— 離線時看
 訂閱連結會**一年後自動失效**,可在同一對話框看到到期日、上次讀取時間,並隨時撤銷。
 拿到網址的人都能讀那個日曆,請當成密碼保管。
 
+## 給 AI Agent 用(CLI + MCP)
+
+日曆本身就是一个工具面:任何会跑命令行、或会说 MCP 的 AI agent(Qoder、Claude、Codex……)
+都能直接查行程、建行程、找空档、留言——不用碰浏览器。
+
+### 1. 产生 agent token
+
+Agent 不用 cookie,用长期 bearer token(可命名、可撤销、列出时只显示前缀):
+
+```bash
+node src/cli.ts login --email you@example.com --password 你的密碼
+node src/cli.ts token create --name qoder
+# → { "token": "cal_…", "name": "qoder" }   只显示这一次
+```
+
+把 token 交给 agent 的方式二选一:环境变量 `CAL_BASE` / `CAL_TOKEN` / `CAL_CALENDAR`(预设日历),
+或写进 `~/.shared-calendar-agent.json`(`login` 与 `use <calendar-id>` 会自动维护)。
+撤销:`node src/cli.ts token revoke cal_…`。
+
+### 2. CLI(人也能用,`--json` 给机器)
+
+```bash
+node src/cli.ts calendars
+node src/cli.ts events --from 2026-11-01 --days 30
+node src/cli.ts add --title "大提琴課" --start "2026-11-05 14:00" --end "2026-11-05 15:00" --reminders 30
+node src/cli.ts add --title "古琴班" --start "2026-11-05 19:00" --rrule "FREQ=WEEKLY;BYDAY=TH"
+node src/cli.ts quick "明天下午3點看牙醫"          # 自然语言;没把握时会回 needs_confirmation
+node src/cli.ts free --date 2026-11-05 --duration 60
+node src/cli.ts show evt_…  |  update evt_… --title "新標題"  |  delete evt_… --scope occurrence --occ 2026-11-12
+node src/cli.ts comment evt_… 記得帶譜
+node src/cli.ts subscribe --days 365               # 唯读 ICS 订阅网址
+```
+
+时间参数接受 epoch 毫秒、ISO 8601、`YYYY-MM-DD`、`"YYYY-MM-DD HH:MM"`
+(没写时区时按 `--tz`/账号时区的墙上时间解读)。错误一律输出 `{"error":…,"status":…}` 并以非 0 退出。
+
+### 3. MCP server(给会说 MCP 的 agent)
+
+`src/mcp.ts` 是零依赖的 stdio MCP server,提供 13 个工具:
+`list_calendars` / `list_events` / `get_event` / `create_event` / `create_events`(批次)/
+`quick_add` / `update_event` / `delete_event` / `override_occurrence`(只改某一次)/
+`find_free_slots` / `add_comment` / `list_labels` / `create_subscription`。
+
+在你的 agent 里登记(Qoder / Claude Desktop 等的 mcp 设置皆同型):
+
+```json
+{
+  "mcpServers": {
+    "shared-calendar": {
+      "command": "node",
+      "args": ["D:/timetree-oss/src/mcp.ts"],
+      "env": {
+        "CAL_BASE": "http://127.0.0.1:8787",
+        "CAL_TOKEN": "cal_…",
+        "CAL_CALENDAR": "cal_…"
+      }
+    }
+  }
+}
+```
+
+`command` 的 node 必须是 24+(或改用绝对路径 `D:/rea-toolchain/node-v24.18.0-win-x64/node.exe`)。
+工具回报刻意紧凑(本地时间标签 + `occurrence_start` epoch),重复规则的展开、override、EXDATE
+都由服务器算好,agent 不需要自己处理 RFC 5545。
+
+验证:`node scripts/test-agent.ts` 会真启服务器,把 token 生命周期、13 个工具、CLI 子进程、
+MCP stdio 子进程全部走一遍(41 个断言)。
+
 ## 安全邊界(已知,不是沒做)
 
 - 所有寫入請求都是同源檢查 + `SameSite=Lax` 的 HttpOnly session cookie;跨站 POST 會被 403 掉。
+- Agent token 是 `cal_` 前缀的 192-bit 随机 bearer:只在建立时回显一次,列表只显示前缀,可随时撤销;
+  撤销即刻生效(下一个请求就 401,有测试)。
 - 密碼 scrypt 加鹽,不會出現在 log。
 - **登入限速**:15 分鐘內同一 email 失敗 8 次、或同一 IP 失敗 30 次即回 429(有測試)。
   放在 reverse proxy 後面時設 `TRUST_PROXY=1`,否則每個請求看起來都來自 proxy。

@@ -131,6 +131,16 @@ create table if not exists subscriptions (
   last_used_at integer
 );
 
+-- Long-lived bearer tokens so a CLI or MCP agent can act as one user without cookies.
+create table if not exists agent_tokens (
+  token        text primary key,
+  user_id      text not null references users(id) on delete cascade,
+  name         text not null default 'agent',
+  created_at   integer not null,
+  last_used_at integer,
+  revoked_at   integer
+);
+
 -- Failed sign-ins, so a password guesser gets throttled instead of us being the oracle.
 create table if not exists login_failures (
   id    integer primary key autoincrement,

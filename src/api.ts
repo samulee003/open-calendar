@@ -4,7 +4,7 @@ import { icsForCalendar } from './ics.ts';
 import { dayKey, isValidZone, wallParts } from './tz.ts';
 import { parseQuickAdd } from './nlp.ts';
 import {
-  newId, randomCode, hashPass, verifyPass, createSession, userByToken, safeEqual,
+  newId, randomCode, hashPass, verifyPass, createSession, userByToken, safeEqual, createAgentToken,
 } from './auth.ts';
 
 const DAY = 86400000;
@@ -239,6 +239,33 @@ export const routes = {
   'GET /api/me': (ctx: Ctx) => {
     const u = needUser(ctx);
     return { id: u.id, email: u.email, name: u.name, tz: u.tz };
+  },
+
+  // Bearer tokens for CLI/MCP agents. The full token is shown once, at creation;
+  // the list only ever exposes a prefix so a leaked response cannot replay it.
+  'GET /api/agent-tokens': (ctx: Ctx) => {
+    const u = needUser(ctx);
+    return ctx.store.all(
+      `select substr(token, 1, 10) || '…' as token_prefix, name, created_at, last_used_at, revoked_at
+       from agent_tokens where user_id = ? order by created_at desc`, String(u.id));
+  },
+
+  'POST /api/agent-tokens': (ctx: Ctx) => {
+    const u = needUser(ctx);
+    const live = Number(ctx.store.get(
+      'select count(*) as n from agent_tokens where user_id = ? and revoked_at is null', String(u.id))?.n ?? 0);
+    if (live >= 10) throw new HttpError(400, 'too_many_tokens');
+    const name = String(ctx.body?.name ?? 'agent').trim().slice(0, 60) || 'agent';
+    return { token: createAgentToken(ctx.store, String(u.id), name), name };
+  },
+
+  'DELETE /api/agent-tokens/:token': (ctx: Ctx) => {
+    const u = needUser(ctx);
+    const row = ctx.store.get('select 1 as x from agent_tokens where token = ? and user_id = ?',
+      ctx.params.token, String(u.id));
+    if (!row) throw new HttpError(404, 'no_such_token');
+    ctx.store.run('update agent_tokens set revoked_at = ? where token = ?', Date.now(), ctx.params.token);
+    return { revoked: true };
   },
 
   'GET /api/calendars': (ctx: Ctx) => {
