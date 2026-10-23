@@ -9,7 +9,7 @@
 // export does not map, the tool prints the header row and stops instead of guessing.
 
 import { readFile } from 'node:fs/promises';
-import { parseCsv } from '../src/import-lib.ts';
+import { parseCsv, describeHeader } from '../src/import-lib.ts';
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -19,11 +19,19 @@ const flag = (name: string) => process.argv.includes(`--${name}`);
 
 const base = arg('url') ?? 'http://127.0.0.1:8787';
 const file = arg('file');
-const usage = '用法: node scripts/import-timetree.ts --url URL --email E --password P --calendar ID或名稱 --file data.csv [--dry-run]';
+const usage = '用法: node scripts/import-timetree.ts --url URL --email E --password P --calendar ID或名稱 --file data.csv [--dry-run | --headers]';
 
 if (!file || !arg('email') || !arg('password') || !arg('calendar')) {
   console.log(usage);
   process.exitCode = 2;
+} else if (flag('headers')) {
+  const d = describeHeader(await readFile(file, 'utf8'));
+  console.log('表頭：' + d.header.join(' | '));
+  for (const [k, i] of Object.entries(d.mapping)) {
+    console.log('  ' + k.padEnd(9) + ' -> ' + (i >= 0 ? d.header[i] : '（未對應）'));
+  }
+  const missing = ['title'].concat(d.mapping.date < 0 && d.mapping.time < 0 ? ['date' ] : []);
+  if (missing.length) console.log('缺少必要欄位：' + missing.join(', '));
 } else {
   const { events, skipped } = parseCsv(await readFile(file, 'utf8'));
   for (const s of skipped) console.log('跳過 ' + s);

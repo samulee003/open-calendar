@@ -41,6 +41,19 @@ function dateOnly(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10).replace(/-/g, '');
 }
 
+function alarmTrigger(minutes: number): string {
+  if (minutes === 0) return 'PT0S';
+  return minutes % 1440 === 0 ? `-P${minutes / 1440}D` : `-PT${minutes}M`;
+}
+
+function alarmLines(minutes: number[], title: string): string[] {
+  const out: string[] = [];
+  for (const m of minutes.map(Number).filter((n) => Number.isFinite(n) && n >= 0 && n <= 525600)) {
+    out.push('BEGIN:VALARM', 'ACTION:DISPLAY', `TRIGGER:${alarmTrigger(m)}`, `DESCRIPTION:${esc(title)}`, 'END:VALARM');
+  }
+  return out;
+}
+
 export type IcsRow = {
   id: string | number;
   title: string;
@@ -54,6 +67,7 @@ export type IcsRow = {
   created_at: number;
   label_name?: string | null;
   tz?: string | null;
+  reminders?: number[];
 };
 
 export type IcsOverride = {
@@ -117,6 +131,9 @@ export function icsForCalendar(name: string, events: IcsRow[], overrides: IcsOve
         lines.push(`EXDATE:${instants.map(stampUTC).join(',')}`);
       }
     }
+    // Let the phone's own calendar app fire the reminder; subscribed calendars
+    // honour VALARM on iOS and most Android clients, but not all.
+    lines.push(...alarmLines(e.reminders ?? [], String(e.title)));
     lines.push('END:VEVENT');
   }
 
@@ -143,6 +160,7 @@ export function icsForCalendar(name: string, events: IcsRow[], overrides: IcsOve
         location: o.location != null ? String(o.location) : String(master.location),
         label_name: master.label_name ?? null,
       }));
+      lines.push(...alarmLines(master.reminders ?? [], o.title != null ? String(o.title) : String(master.title)));
     }
     lines.push('END:VEVENT');
   }

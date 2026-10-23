@@ -125,14 +125,36 @@ create table if not exists subscriptions (
   token       text primary key,
   calendar_id text not null references calendars(id) on delete cascade,
   created_by  text not null references users(id),
-  created_at  integer not null
+  created_at  integer not null,
+  expires_at  integer,
+  revoked_at  integer,
+  last_used_at integer
 );
+
+-- Failed sign-ins, so a password guesser gets throttled instead of us being the oracle.
+create table if not exists login_failures (
+  id    integer primary key autoincrement,
+  email text not null,
+  ip    text not null,
+  ts    integer not null
+);
+create index if not exists login_failures_ts on login_failures (ts);
 `;
+
+// Columns added after the first release; ALTER is a no-op error when they exist.
+const MIGRATIONS = [
+  'alter table subscriptions add column expires_at integer',
+  'alter table subscriptions add column revoked_at integer',
+  'alter table subscriptions add column last_used_at integer',
+];
 
 export function openDb(path: string): DatabaseSync {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec(SCHEMA);
+  for (const sql of MIGRATIONS) {
+    try { db.exec(sql); } catch { /* column already present */ }
+  }
   return db;
 }
 

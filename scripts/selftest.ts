@@ -163,7 +163,14 @@ const injected = await req('POST', `/api/calendars/${cid}/events`, {
 }, cb);
 ok('crlf title accepted as data', injected.status === 200);
 
-const sub = await req('POST', `/api/calendars/${cid}/subscription`, {}, ca);
+// ---- creating an ICS token must not disturb the session cookie ----
+const beforeSub = await req('GET', '/api/me', undefined, ca);
+const subResp = await req('POST', `/api/calendars/${cid}/subscription`, {}, ca);
+ok('subscription response does not carry a session cookie', subResp.cookie === null, String(subResp.cookie));
+ok('session survives issuing an ICS token',
+  beforeSub.status === 200 && (await req('GET', '/api/me', undefined, ca)).status === 200);
+
+const sub = { data: subResp.data };
 ok('subscription token issued', !!sub.data.token);
 const ics = await fetch(`${base}${sub.data.path}`);
 ok('ics readable without login', ics.status === 200 && ics.headers.get('content-type')!.includes('text/calendar'));
@@ -214,6 +221,51 @@ const echoed = (await req('GET', `/api/calendars/${cid}/events?from=${D('2026-12
 ok('stored verbatim, no server-side markup injection', echoed.title === '<img src=x onerror=alert(1)>');
 const ics2 = await (await fetch(`${base}${sub.data.path}`)).text();
 ok('ics carries the raw title as summary text (escaping is the renderer job)', ics2.includes('SUMMARY:<img src=x onerror=alert(1)>'));
+
+// ---- reminders reach the phone as VALARM ----
+ok('ics carries a VALARM for the 30-minute reminder',
+  body.includes('BEGIN:VALARM') && body.includes('TRIGGER:-PT30M') && body.includes('ACTION:DISPLAY'));
+ok('VALARM sits inside a VEVENT, not after it',
+  body.indexOf('BEGIN:VALARM') > body.indexOf('BEGIN:VEVENT') && body.indexOf('END:VALARM') < body.lastIndexOf('END:VEVENT'));
+
+// ---- security headers ----
+const headRes = await fetch(`${base}/api/me`, { headers: { cookie: ca } });
+ok('api sends nosniff', headRes.headers.get('x-content-type-options') === 'nosniff');
+ok('api sends a CSP', /default-src 'self'/.test(headRes.headers.get('content-security-policy') ?? ''));
+ok('api sends no-referrer', headRes.headers.get('referrer-policy') === 'no-referrer');
+const idxHead = await fetch(`${base}/`);
+ok('static ui sends the same headers', idxHead.headers.get('x-content-type-options') === 'nosniff'
+  && idxHead.headers.get('x-frame-options') === 'DENY');
+
+// ---- subscription management ----
+const subsList = await req('GET', `/api/calendars/${cid}/subscriptions`, undefined, ca);
+ok('subscription list shows the token and its expiry',
+  Array.isArray(subsList.data) && subsList.data.some((s: any) => s.token === sub.data.token && s.expires_at > Date.now()),
+  JSON.stringify(subsList.data).slice(0, 200));
+ok('subscription defaults to a one-year window',
+  subsList.data[0].expires_at - subsList.data[0].created_at >= 364 * 86400000);
+ok('revoked token stops answering', (await (async () => {
+  const r = await req('DELETE', `/api/subscriptions/${sub.data.token}`, undefined, ca);
+  return r.status === 200 && (await fetch(`${base}${sub.data.path}`)).status === 404;
+})()));
+
+const expired = 'expiredtoken-for-test';
+store.run('insert into subscriptions (token, calendar_id, created_by, created_at, expires_at) values (?,?,?,?,?)',
+  expired, cid, String(me.data.id), Date.now() - 2000, Date.now() - 1000);
+ok('expired token is rejected', (await fetch(`${base}/ics/${expired}.ics`)).status === 404);
+ok('non-members cannot revoke a subscription', (await req('DELETE', `/api/subscriptions/${expired}`, undefined, ct)).status === 403);
+
+// ---- login throttling ----
+const brute = 'brute@example.com';
+await req('POST', '/api/signup', { email: brute, name: 'B', password: 'password1' });
+let throttled = 0;
+for (let i = 0; i < 9; i++) {
+  const r = await req('POST', '/api/login', { email: brute, password: 'wrong-one-' + i });
+  if (r.status === 429) { throttled = i + 1; break; }
+}
+ok('repeated failures get throttled', throttled > 0 && throttled <= 9, `throttled at attempt ${throttled}`);
+ok('throttled login does not leak whether the account exists',
+  (await req('POST', '/api/login', { email: 'nosuch@example.com', password: 'x'.repeat(12) })).status === 401);
 
 // ---- cross-site request blocked ----
 ok('cross-origin mutation blocked', (await req('POST', `/api/calendars/${cid}/events`, { title: 'x', start_at: 1 }, ca, 'http://evil.example')).status === 403);

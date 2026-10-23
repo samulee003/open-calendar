@@ -2,8 +2,15 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>共享日曆</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#2f6fed">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="共享日曆">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon.svg">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -138,6 +145,8 @@
   <label>日曆<select id="sub-cal"></select></label>
   <button type="button" id="sub-make" class="primary">產生訂閱網址</button>
   <input id="sub-url" readonly>
+  <h4 class="sub-head">已產生的連結</h4>
+  <ul id="sub-list" class="sub-list"></ul>
   <div class="actions"><button type="button" id="sub-close">關閉</button></div>
 </dialog>
 

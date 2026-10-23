@@ -425,13 +425,61 @@ $('#join').addEventListener('click', async () => {
   catch (e) { alert(e.message === 'bad_invite' ? '邀请码不对或已被使用' : e.message); }
 });
 
-$('#open-sub').addEventListener('click', () => $('#dlg-sub').showModal());
+function subStatus(s) {
+  const fmt = (ms) => new Date(ms).toLocaleDateString('zh-TW');
+  if (s.revoked_at) return '已撤銷';
+  if (s.expires_at && s.expires_at < Date.now()) return '已過期';
+  const base = s.expires_at ? `到 ${fmt(s.expires_at)} 失效` : '永久有效';
+  return s.last_used_at ? `${base}・上次讀取 ${fmt(s.last_used_at)}` : base;
+}
+
+async function loadSubs(calId) {
+  const list = $('#sub-list');
+  if (!list) return;
+  list.textContent = '';
+  let rows = [];
+  try { rows = await api(`/api/calendars/${calId}/subscriptions`); } catch { rows = []; }
+  if (!rows.length) {
+    list.append(el('li', { class: 'hint', text: '还没有订阅链接' }));
+    return;
+  }
+  for (const s of rows) {
+    const dead = s.revoked_at || (s.expires_at && s.expires_at < Date.now());
+    const li = el('li', {},
+      el('code', { text: `/ics/${s.token}.ics` }),
+      el('div', { class: 'hint', text: subStatus(s) }),
+    );
+    if (!dead) {
+      li.append(el('button', {
+        class: 'danger', text: '撤銷',
+        onclick: async () => {
+          if (!confirm('撤銷後這條連結立刻失效，手機要重新訂閱。確定？')) return;
+          await api(`/api/subscriptions/${s.token}`, { method: 'DELETE' });
+          loadSubs(calId);
+        },
+      }));
+    }
+    list.append(li);
+  }
+}
+
+$('#open-sub').addEventListener('click', () => {
+  $('#dlg-sub').showModal();
+  $('#sub-url').value = '';
+  loadSubs($('#sub-cal').value);
+});
 $('#sub-close').addEventListener('click', () => $('#dlg-sub').close());
+$('#sub-cal').addEventListener('change', () => loadSubs($('#sub-cal').value));
 $('#sub-make').addEventListener('click', async () => {
   const out = await api(`/api/calendars/${$('#sub-cal').value}/subscription`, { method: 'POST', body: {} });
   $('#sub-url').value = `${location.origin}${out.path}`;
   $('#sub-url').select();
+  loadSubs($('#sub-cal').value);
 });
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => { /* shell cache is optional */ });
+}
 
 // ---------- go ----------
 try { await boot(); } catch { showAuth(); }

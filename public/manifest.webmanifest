@@ -1,0 +1,16 @@
+{
+  "name": "共享日曆",
+  "short_name": "日曆",
+  "description": "家人一起用的共享日曆，資料留在自己的機器上",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f6f7fb",
+  "theme_color": "#2f6fed",
+  "lang": "zh-Hant",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

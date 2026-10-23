@@ -37,18 +37,32 @@ export function splitCsvLine(line: string): string[] {
 const pick = (headers: string[], key: string): number =>
   headers.findIndex((h) => ALIASES[key]?.includes(h.replace(/\s+/g, ' ').trim()));
 
-function toMin(h: string, m: string): number { return +h * 60 + +m; }
+// The leading guard must be a lookbehind, not \b: in "2026-11-09T09:15" there is
+// no word boundary between T and 0, so \b would skip ahead and match "15:00".
+const TIMES = /(?<![\d:])(\d{1,2}):(\d{2})(?::\d{2})?(?!\d)\s*(am|pm)?/gi;
 
-function parseDate(v: string): [number, number, number] | null {
-  const m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/.exec(v.trim());
-  if (m) return [+m[1], +m[2], +m[3]];
-  const s = Date.parse(v.trim());
-  if (Number.isNaN(s)) return null;
-  const d = new Date(s);
-  return [d.getFullYear(), d.getMonth() + 1, d.getDate()];
+function toMin(h: string, m: string, ampm?: string): number {
+  let hours = +h;
+  const suffix = (ampm ?? '').toLowerCase();
+  if (suffix === 'pm' && hours < 12) hours += 12;
+  if (suffix === 'am' && hours === 12) hours = 0;
+  return hours * 60 + +m;
 }
 
-const TIMES = /\b(\d{1,2}):(\d{2})\b/g;
+function parseDate(v: string): [number, number, number] | null {
+  const s = v.trim();
+  const iso = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/.exec(s);
+  if (iso) return [+iso[1], +iso[2], +iso[3]];
+  const cn = /^(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?/.exec(s);
+  if (cn) return [+cn[1], +cn[2], +cn[3]];
+  // "05/11/2026" is deliberately rejected: day-first and month-first are both
+  // plausible and Date.parse would silently assume US order.
+  if (/^\d{1,2}[/.]\d{1,2}[/.]\d{2,4}/.test(s)) return null;
+  const parsed = Date.parse(s);
+  if (Number.isNaN(parsed)) return null;
+  const d = new Date(parsed);
+  return [d.getFullYear(), d.getMonth() + 1, d.getDate()];
+}
 
 export type ParsedRow = { error?: string; event?: any };
 
@@ -66,10 +80,10 @@ export function rowToEvent(row: Rec): ParsedRow {
   }
 
   // times may live in their own columns or inside the date cell ("2026-11-05 14:00-15:00")
-  const found = [...rawDate.matchAll(TIMES)].map((m) => toMin(m[1], m[2]));
+  const found = [...rawDate.matchAll(TIMES)].map((m) => toMin(m[1], m[2], m[3]));
   const explicit = [row.start, row.end].map((v) => {
-    const m = v ? /^(\d{1,2}):(\d{2})$/.exec(v.trim()) : null;
-    return m ? toMin(m[1], m[2]) : null;
+    const m = v ? /^(\d{1,2}):(\d{2})(?::\d{2})?\s*(am|pm)?$/i.exec(v.trim()) : null;
+    return m ? toMin(m[1], m[2], m[3]) : null;
   });
   const sMin = explicit[0] ?? found[0] ?? null;
   const eMin = explicit[1] ?? found[1] ?? (sMin !== null ? sMin + 60 : null);
@@ -93,6 +107,15 @@ export function rowToEvent(row: Rec): ParsedRow {
   else if (/每月|monthly/i.test(hay)) event.rrule = `RRULE:FREQ=MONTHLY;BYMONTHDAY=${d}`;
   else if (/每年|yearly/i.test(hay)) event.rrule = 'RRULE:FREQ=YEARLY';
   return { event };
+}
+
+/** Prints what the header row would map to, without parsing any data rows. */
+export function describeHeader(text: string): { header: string[]; mapping: Record<string, number> } {
+  const first = text.split(/\r?\n/).find((l) => l.trim()) ?? '';
+  const header = splitCsvLine(first).map((h) => h.toLowerCase());
+  const mapping: Record<string, number> = {};
+  for (const k of Object.keys(ALIASES)) mapping[k] = pick(header, k);
+  return { header, mapping };
 }
 
 export function parseCsv(text: string): { events: any[]; skipped: string[] } {

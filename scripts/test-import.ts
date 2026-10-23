@@ -1,4 +1,4 @@
-import { parseCsv, splitCsvLine } from '../src/import-lib.ts';
+import { parseCsv, splitCsvLine, describeHeader } from '../src/import-lib.ts';
 
 let pass = 0, fail = 0;
 const ok = (label: string, cond: boolean, extra = '') => {
@@ -61,6 +61,36 @@ const withLabel = `日期,標題,標籤
 2026-11-05,大提琴課,才藝`;
 const lb = parseCsv(withLabel);
 ok('label column is carried for id resolution', lb.events[0].__label === '才藝', JSON.stringify(lb.events[0]));
+
+// ---- format tolerance ----
+const cnDate = parseCsv(`日期,標題\n2026年11月5日,家長會`);
+ok('chinese 年月日 date parses', cnDate.events.length === 1 && day(cnDate.events[0].start_at) === '2026-11-05', JSON.stringify(cnDate));
+
+const twelve = parseCsv(`title,date,start,end
+Dentist,2026-11-06,2:00 PM,3:30 PM`);
+ok('12-hour times with PM parse', twelve.events.length === 1
+  && hm(twelve.events[0].start_at) === '14:00' && hm(twelve.events[0].end_at) === '15:30', JSON.stringify(twelve.events[0]));
+
+const isoTime = parseCsv(`title,dateTime
+Standup,2026-11-09T09:15:00`);
+ok('ISO datetime with T parses', isoTime.events.length === 1 && hm(isoTime.events[0].start_at) === '09:15', JSON.stringify(isoTime.events[0]));
+
+const englishDate = parseCsv(`title,date
+Concert,"November 5, 2026"`);
+ok('english month-name date parses', englishDate.events.length === 1
+  && day(englishDate.events[0].start_at) === '2026-11-05', JSON.stringify(englishDate));
+
+const ambiguous = parseCsv(`title,date
+Mystery,05/11/2026`);
+ok('ambiguous d/m vs m/d date is refused, not guessed',
+  ambiguous.events.length === 0 && /無法解析日期/.test(ambiguous.skipped[0] ?? ''), JSON.stringify(ambiguous));
+
+const hdr = describeHeader(`日期,標題,開始時間,結束時間,備註\n2026-11-05,x,1:00,2:00,`);
+ok('header diagnostic maps the useful columns',
+  hdr.mapping.title === 1 && hdr.mapping.date === 0 && hdr.mapping.start === 2 && hdr.mapping.note === 4,
+  JSON.stringify(hdr));
+const hdrBad = describeHeader(`foo,bar\n1,2`);
+ok('header diagnostic flags unmapped required columns', hdrBad.mapping.title === -1 && hdrBad.mapping.date === -1);
 
 console.log(fail ? `\n${fail} FAILED` : `\n${pass} passed`);
 process.exitCode = fail ? 1 : 0;

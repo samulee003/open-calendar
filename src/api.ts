@@ -14,7 +14,12 @@ export type Ctx = {
   params: Record<string, string>;
   query: URLSearchParams;
   body: any;
+  ip: string;
 };
+
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_PER_EMAIL = 8;
+const LOGIN_MAX_PER_IP = 30;
 
 class HttpError extends Error {
   status: number;
@@ -202,15 +207,27 @@ export const routes = {
     ctx.store.run('insert into members (calendar_id, user_id, role, joined_at) values (?,?,?,?)', personal, id, 'owner', Date.now());
     for (const [i, [n, c]] of [['工作', '#e06666'], ['家庭', '#6aa84f'], ['個人', '#8e7cc3']].entries())
       ctx.store.run('insert into labels (calendar_id, name, color, position) values (?,?,?,?)', personal, n, c, i);
-    return { token: createSession(ctx.store, id), user_id: id };
+    return { session: createSession(ctx.store, id), user_id: id };
   },
 
   'POST /api/login': (ctx: Ctx) => {
     const email = String(ctx.body?.email ?? '').trim().toLowerCase();
+    const now = Date.now();
+    const windowStart = now - LOGIN_WINDOW_MS;
+    ctx.store.run('delete from login_failures where ts < ?', now - 86400000);
+    const byEmail = Number(ctx.store.get(
+      'select count(*) as n from login_failures where email = ? and ts > ?', email, windowStart)?.n ?? 0);
+    const byIp = Number(ctx.store.get(
+      'select count(*) as n from login_failures where ip = ? and ts > ?', ctx.ip, windowStart)?.n ?? 0);
+    if (byEmail >= LOGIN_MAX_PER_EMAIL || byIp >= LOGIN_MAX_PER_IP) throw new HttpError(429, 'too_many_attempts');
+
     const row = ctx.store.get('select * from users where email = ?', email);
-    if (!row || !verifyPass(String(ctx.body?.password ?? ''), String(row.pass_hash), String(row.pass_salt)))
+    if (!row || !verifyPass(String(ctx.body?.password ?? ''), String(row.pass_hash), String(row.pass_salt))) {
+      ctx.store.run('insert into login_failures (email, ip, ts) values (?,?,?)', email, ctx.ip, now);
       throw new HttpError(401, 'bad_credentials');
-    return { token: createSession(ctx.store, String(row.id)), user_id: String(row.id) };
+    }
+    ctx.store.run('delete from login_failures where email = ?', email);
+    return { session: createSession(ctx.store, String(row.id)), user_id: String(row.id) };
   },
 
   'POST /api/logout': (ctx: Ctx) => {
@@ -465,14 +482,35 @@ export const routes = {
   'POST /api/calendars/:id/subscription': (ctx: Ctx) => {
     mustView(ctx, ctx.params.id);
     const token = newId('sub').slice(4);
-    ctx.store.run('insert into subscriptions (token, calendar_id, created_by, created_at) values (?,?,?,?)',
-      token, ctx.params.id, String(ctx.user!.id), Date.now());
-    return { token, path: `/ics/${token}.ics` };
+    const now = Date.now();
+    const days = Math.min(3650, Math.max(1, Number(ctx.body?.days ?? 365)));
+    const expires = now + days * 86400000;
+    ctx.store.run('insert into subscriptions (token, calendar_id, created_by, created_at, expires_at) values (?,?,?,?,?)',
+      token, ctx.params.id, String(ctx.user!.id), now, expires);
+    return { token, path: `/ics/${token}.ics`, expires_at: expires };
+  },
+
+  'GET /api/calendars/:id/subscriptions': (ctx: Ctx) => {
+    mustView(ctx, ctx.params.id);
+    return ctx.store.all(
+      `select token, created_at, expires_at, revoked_at, last_used_at from subscriptions
+       where calendar_id = ? order by created_at desc`, ctx.params.id);
+  },
+
+  'DELETE /api/subscriptions/:token': (ctx: Ctx) => {
+    const sub = ctx.store.get('select * from subscriptions where token = ?', ctx.params.token);
+    if (!sub) throw new HttpError(404, 'bad_token');
+    mustView(ctx, String(sub.calendar_id));
+    ctx.store.run('update subscriptions set revoked_at = ? where token = ?', Date.now(), ctx.params.token);
+    return { revoked: true };
   },
 
   'GET /ics/:token.ics': (ctx: Ctx) => {
     const sub = ctx.store.get('select * from subscriptions where token = ?', ctx.params.token);
-    if (!sub) throw new HttpError(404, 'bad_token');
+    if (!sub || sub.revoked_at != null) throw new HttpError(404, 'bad_token');
+    if (sub.expires_at != null && Number(sub.expires_at) < Date.now()) throw new HttpError(404, 'expired_token');
+    ctx.store.run('update subscriptions set last_used_at = ? where token = ?', Date.now(), ctx.params.token);
+
     const cal = calRow(ctx, String(sub.calendar_id));
     const events = ctx.store.all(
       `select e.*, l.name as label_name from events e
@@ -483,6 +521,16 @@ export const routes = {
     const overrides = ids.length
       ? ctx.store.all(`select * from overrides where event_id in (${ids.map(() => '?').join(',')})`, ...ids) as any[]
       : [];
+    const alarms = ids.length
+      ? ctx.store.all(`select event_id, minutes from reminders where event_id in (${ids.map(() => '?').join(',')})`, ...ids) as any[]
+      : [];
+    const byEvent = new Map<string, number[]>();
+    for (const a of alarms) {
+      const key = String(a.event_id);
+      byEvent.set(key, [...(byEvent.get(key) ?? []), Number(a.minutes)]);
+    }
+    for (const e of events) e.reminders = byEvent.get(String(e.id)) ?? [];
+
     return { raw: icsForCalendar(String(cal.name), events, overrides), contentType: 'text/calendar; charset=utf-8' };
   },
 };

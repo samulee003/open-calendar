@@ -13,6 +13,15 @@ const MAX_BODY = 2 * 1024 * 1024;
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon',
+  '.webmanifest': 'application/manifest+json; charset=utf-8', '.json': 'application/json; charset=utf-8',
+};
+
+// style-src needs 'unsafe-inline' because the UI colours chips with style attributes.
+const SECURITY_HEADERS: Record<string, string> = {
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer',
+  'x-frame-options': 'DENY',
+  'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
 };
 
 type Handler = [string, string];
@@ -58,7 +67,7 @@ export function makeServer(store: Store) {
     const method = req.method ?? 'GET';
     const send = (status: number, payload: unknown, headers: Record<string, string> = {}) => {
       const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
-      res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers });
+      res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...SECURITY_HEADERS, ...headers });
       res.end(body);
     };
 
@@ -74,12 +83,18 @@ export function makeServer(store: Store) {
 
     const cookies = parseCookies(req.headers.cookie);
     let user: Row | null = userByToken(store, cookies.sid) as Row | null;
+    // Trust X-Forwarded-For only behind a proxy you control; otherwise a client can
+    // rotate the header to dodge the per-IP login limit.
+    const forwarded = process.env.TRUST_PROXY === '1'
+      ? String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim()
+      : '';
+    const ip = forwarded || req.socket.remoteAddress || 'unknown';
 
     if (method === 'GET' && !url.pathname.startsWith('/api/') && !url.pathname.startsWith('/ics/')) {
       const rel = url.pathname === '/' ? 'index.html' : normalize(url.pathname).replace(/^(\.\.[/\\])+/, '').slice(1);
       try {
         const file = await readFile(join(PUBLIC, rel));
-        res.writeHead(200, { 'content-type': MIME[extname(rel)] ?? 'application/octet-stream' });
+        res.writeHead(200, { 'content-type': MIME[extname(rel)] ?? 'application/octet-stream', ...SECURITY_HEADERS });
         res.end(file);
       } catch {
         res.writeHead(404); res.end('not found');
@@ -100,11 +115,13 @@ export function makeServer(store: Store) {
       if (body !== undefined && typeof body !== 'object') { send(400, { error: 'json_object_required' }); return; }
 
       try {
-        const result = await (route.fn as any)({ store, user, params, query: url.searchParams, body });
+        const result = await (route.fn as any)({ store, user, params, query: url.searchParams, body, ip });
         const headers: Record<string, string> = {};
-        if (result?.token) headers['set-cookie'] = sessionCookie(result.token);
+        // Only an explicit `session` field sets the cookie. Inferring it from any
+        // field named `token` once clobbered the session with an ICS token.
+        if (result?.session) headers['set-cookie'] = sessionCookie(result.session);
         if (result?.raw) {
-          res.writeHead(200, { 'content-type': result.contentType ?? 'text/plain; charset=utf-8', 'cache-control': 'public, max-age=60' });
+          res.writeHead(200, { 'content-type': result.contentType ?? 'text/plain; charset=utf-8', 'cache-control': 'public, max-age=60', ...SECURITY_HEADERS });
           res.end(result.raw);
           return;
         }

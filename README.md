@@ -71,28 +71,54 @@ node scripts/import-timetree.ts --email me@x.tw --password '...' \
 `--dry-run` 只解析不寫入。表頭比對支援中/英/日常用欄名(見 `src/import-lib.ts`),
 比對不到時它會**把表頭印出來並停止**,不會亂猜對映。
 
+支援的日期寫法:`2026-11-05`、`2026/11/5`、`2026年11月5日`、`2026-11-05T14:00`、
+`November 5, 2026`;時間支援 `14:00`、`14:00:00`、`2:00 PM`。
+`05/11/2026` 這種日/月順序不明的寫法**故意拒絕**,不猜。
+
+拿到一份格式未知的匯出檔時,先看它怎麼對映:
+
+```bash
+node scripts/import-timetree.ts --file export.csv --headers
+```
+
 ⚠️ 別名表是照常見匯出格式寫的,**尚未用一份真实的 TimeTree 匯出檔驗證過**。
 第一次用請先 `--dry-run`。
 
-## 手機訂閱
+## 手機訂閱與手機使用
 
-「手機訂閱」產生 `/ics/<token>.ics`。這個連結**只讀但公開**:拿到網址的人都能讀那個日曆,
-請當成密碼保管。要撤銷就刪掉 `subscriptions` 那列(或重開一個新 token)。
+有兩條路,可以並用:
+
+**A. 直接用手機瀏覽器(推薦,功能完整)**
+打開同一個網址登入即可。版面在 760px 以下自動切換成手機模式:單欄月曆、日期詳情變成底部面板、輸入框 16px(避免 iOS 聚焦時整頁放大)。
+「加入主畫面」後以 standalone 模式啟動(已附 `manifest.webmanifest` 與 service worker)。
+Service worker **只快取介面**,不快取 `/api`、`/ics` —— 離線時看到的是介面而非過期資料。
+
+**B. 訂閱到手機內建日曆(唯讀)**
+「手機訂閱」產生 `/ics/<token>.ics`,iPhone 內建日曆、Android 的 DAVx⁵／Calendri 都能收。
+行程的提醒會以 iCalendar `VALARM` 輸出,由**手機自己的日曆 app** 負責響鈴 ——
+不需要推播伺服器。訂閱是唯讀的:手機上不會看到留言與按讚。
+
+訂閱連結會**一年後自動失效**,可在同一對話框看到到期日、上次讀取時間,並隨時撤銷。
+拿到網址的人都能讀那個日曆,請當成密碼保管。
 
 ## 安全邊界(已知,不是沒做)
 
 - 所有寫入請求都是同源檢查 + `SameSite=Lax` 的 HttpOnly session cookie;跨站 POST 會被 403 掉。
 - 密碼 scrypt 加鹽,不會出現在 log。
+- **登入限速**:15 分鐘內同一 email 失敗 8 次、或同一 IP 失敗 30 次即回 429(有測試)。
+  放在 reverse proxy 後面時設 `TRUST_PROXY=1`,否則每個請求看起來都來自 proxy。
+- 回應帶 `Content-Security-Policy`(無 inline script)、`X-Content-Type-Options`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`。
 - 前端所有文字一律走 `textContent`,行程標題與備註(由**其他家庭成員**撰寫)永遠不會變成 markup。
 - iCalendar 輸出會逃換 `\r`/`\n`,所以標題無法偽造 `DESCRIPTION:` 之类的屬性行(有測試)。
+- 訂閱連結有到期日、可撤銷、會記錄上次讀取時間。
 - SQL 全部預留參數,沒有字串拼接。
-- **沒有做的**:登入嘗試限速、TOTP、audit log、HTTPS(請用 reverse proxy 或 tailscale 之類自行處理)、
-  訂閱 token 的有效期。要公開到網際線前這些都得補。
+- **沒有做的**:TOTP／二階段、audit log、HTTPS(請用 reverse proxy 或 tailscale 之類自行處理)、
+  每個帳號的資料量上限。要公開到網際網路上前,至少先補 HTTPS 與備份。
 
 ## 已知限制
 
-1. 沒有原生行動 app,也沒有推播通知。手機端是透過 ICS 訂閱走各系統自己的日曆 app,
-   因此**手機上看不到留言/按讚,通知也由系統日曆 app 決定**。留言與按讚只在網頁上。
+1. 沒有原生行動 app,也沒有伺服器推播。手機有兩條路:用**手機瀏覽器**(功能完整,含留言按讚,
+   可加入主畫面)或訂閱 **ICS**(唯讀、看不到留言;提醒靠 `VALARM` 由系統日曆 app 響)。
 2. `RRULE` 是子集,不吃 `BYSETPOS`、`WKST`、時區型 `UNTIL`(只用 UTC 形式)。
 3. 全天行程以「建立者時區的日期」存成 UTC 午夜。跨時區共享的家庭成員看到的日期可能差一天
    (這正是它把全天事件當日期處理的代價,不是 bug,但要知道)。
