@@ -51,7 +51,9 @@ hr{border:0;border-top:1px solid var(--line);margin:14px 0}
 .cell.out{background:#fafbfd;color:#aab1c2}
 .cell.today{background:#f0f6ff}
 .cell .d{font-size:12px;padding:0 4px;align-self:flex-end}
-.chip{font-size:11.5px;line-height:1.35;padding:2px 6px;border-radius:5px;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip{font-size:11.5px;line-height:1.35;padding:2px 6px;border-radius:5px;color:#fff;overflow:hidden;white-space:nowrap;display:flex;gap:4px;min-width:0}
+.chip-time{opacity:.85;flex:0 0 auto}
+.chip-title{overflow:hidden;text-overflow:ellipsis}
 .more{font-size:11px;color:var(--mut);padding:0 4px}
 
 .panel{background:var(--card);border:1px solid var(--line);border-radius:var(--rad);max-height:calc(100vh - 90px);overflow:auto}
@@ -85,15 +87,20 @@ textarea{resize:vertical;font-family:ui-monospace,Consolas,monospace;font-size:1
 @media (max-width:760px){
   body{-webkit-text-size-adjust:100%}
   .body{grid-template-columns:1fr;padding:8px;gap:8px}
-  .topbar{padding:8px 8px calc(8px + env(safe-area-inset-bottom,0px));gap:6px}
+  .topbar{padding:8px 8px calc(8px + env(safe-area-inset-bottom,0px));gap:6px;flex-wrap:nowrap;overflow-x:auto;white-space:nowrap;scrollbar-width:none}
+  .topbar::-webkit-scrollbar{display:none}
+  .topbar>*{flex:0 0 auto}
   .topbar h2{font-size:15px;min-width:auto}
   .spacer{display:none}
   .weekdays div{padding:6px 0;font-size:11px}
   .cell{min-height:58px;padding:2px;gap:2px}
   .cell .d{font-size:11px}
   .chip{font-size:10px;padding:1px 3px;border-radius:4px}
+  .chip-time{display:none}
   .more{font-size:10px}
   .calendar{border-radius:8px}
+  /* The panel is a bottom sheet on phones; it stays out of the way until a day is picked. */
+  .panel:not(.open){display:none}
   .panel{position:fixed;left:0;right:0;bottom:0;max-height:72vh;border-radius:14px 14px 0 0;
     box-shadow:0 -10px 34px rgba(15,25,50,.22);z-index:30;padding-bottom:env(safe-area-inset-bottom,0px)}
   .panel-head h3{font-size:14px}

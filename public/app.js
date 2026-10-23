@@ -159,8 +159,9 @@ async function renderMonth() {
         class: 'chip',
         style: `background:${it.label_color ?? (state.calendars.find((c) => c.id === it.calendar_id)?.color ?? '#4a90d9')}`,
         title: it.title,
-        text: it.all_day ? it.title : `${hhmm(it.start_at)} ${it.title}`,
-      }));
+      },
+      el('span', { class: 'chip-time', text: it.all_day ? '' : hhmm(it.start_at) }),
+      el('span', { class: 'chip-title', text: it.title })));
     }
     if (items.length > 3) cell.append(el('div', { class: 'more', text: `還有 ${items.length - 3} 筆` }));
     grid.append(cell);
@@ -168,10 +169,32 @@ async function renderMonth() {
   if (state.sel) openDay(state.sel.key, state.sel.date);
 }
 
+const WEEKDAY_LABEL = { SU: '日', MO: '一', TU: '二', WE: '三', TH: '四', FR: '五', SA: '六' };
+
+function ruleText(rrule) {
+  if (!rrule) return '';
+  const freq = /FREQ=(\w+)/.exec(rrule)?.[1];
+  const every = Number(/INTERVAL=(\d+)/.exec(rrule)?.[1] ?? 1);
+  if (!freq) return '重複';
+  if (freq === 'DAILY') return every > 1 ? `每 ${every} 天` : '每天';
+  if (freq === 'WEEKLY') {
+    const days = /BYDAY=([A-Z,]+)/.exec(rrule)?.[1]?.split(',').map((d) => WEEKDAY_LABEL[d] ?? d).join('、');
+    const base = every > 1 ? `每 ${every} 週` : '每週';
+    return days ? `${base}的週${days}` : base;
+  }
+  if (freq === 'MONTHLY') {
+    const md = /BYMONTHDAY=(-?\d+)/.exec(rrule)?.[1];
+    const base = every > 1 ? `每 ${every} 個月` : '每月';
+    return md ? `${base}的 ${md} 號` : base;
+  }
+  if (freq === 'YEARLY') return every > 1 ? `每 ${every} 年` : '每年';
+  return '重複';
+}
+
 function timeText(r) {
-  if (r.all_day) return '全天';
+  if (r.all_day) return r.recurring ? `全天・${ruleText(r.rrule)}` : '全天';
   const a = `${hhmm(r.start_at)}–${hhmm(r.end_at)}`;
-  return r.recurring ? `${a}・${r.ruleText ?? '重複'}` : a;
+  return r.recurring ? `${a}・${ruleText(r.rrule)}` : a;
 }
 
 function eventCard(r) {
@@ -194,10 +217,15 @@ async function openDay(key, date) {
   if (!items.length) body.append(el('p', { class: 'empty', text: '这一天还没有行程' }));
   for (const r of items) body.append(eventCard(r));
   body.append(el('button', { class: 'primary', onclick: () => openAdd(key), text: '新增到此日' }));
+  $('#panel').classList.add('open');
   $('#panel').classList.remove('hidden');
 }
 
-$('#panel-close').addEventListener('click', () => { $('#panel').classList.add('hidden'); state.sel = null; });
+$('#panel-close').addEventListener('click', () => {
+  $('#panel').classList.add('hidden');
+  $('#panel').classList.remove('open');
+  state.sel = null;
+});
 
 // ---------- add / edit ----------
 function rruleFrom(repeat, dateStr) {

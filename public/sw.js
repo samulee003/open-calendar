@@ -1,7 +1,8 @@
-// Caches the app shell only. Calendar data is never cached: showing a stale
-// month would be worse than showing an offline notice, so /api and /ics always
-// go to the network.
-const CACHE = 'shared-calendar-shell-v1';
+// Caches the app shell so a cold start still renders, but always prefers the
+// network: a family calendar must not show week-old CSS or JS because a cache
+// entry went stale. Calendar data (/api, /ics) is never cached at all —
+// showing a stale month would be worse than an offline notice.
+const CACHE = 'shared-calendar-shell-v2';
 const SHELL = ['/', '/app.js', '/style.css', '/manifest.webmanifest', '/icon.svg'];
 
 self.addEventListener('install', (event) => {
@@ -23,15 +24,16 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/ics/')) return;
 
   event.respondWith(
-    caches.match(event.request).then((hit) => {
-      if (hit) return hit;
-      return fetch(event.request).then((res) => {
+    fetch(event.request)
+      .then((res) => {
         if (res.ok) {
           const copy = res.clone();
           caches.open(CACHE).then((c) => c.put(event.request, copy));
         }
         return res;
-      });
-    }),
+      })
+      .catch(() => caches.match(event.request).then((hit) => hit ?? new Response('offline', {
+        status: 503, headers: { 'content-type': 'text/plain; charset=utf-8' },
+      }))),
   );
 });
