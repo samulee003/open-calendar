@@ -88,7 +88,9 @@ export async function listCalendars(c: Client) {
 export async function listEvents(c: Client, args: Args = {}) {
   const tz = await tzOf(c, args);
   const from = args.from !== undefined ? parseWhen(args.from, tz) : Date.now();
-  const to = args.to !== undefined ? parseWhen(args.to, tz) : from + Math.max(1, Number(args.days ?? 31)) * DAY;
+  // Bound the window so a stray `days: 3650` cannot turn into a year-long payload.
+  const days = Math.min(400, Math.max(1, Number(args.days ?? 31)));
+  const to = args.to !== undefined ? parseWhen(args.to, tz) : from + days * DAY;
   const cal = args.calendar_id ?? args.calendar ?? c.calendar;
   const path = cal ? `/api/calendars/${encodeURIComponent(String(cal))}/events` : '/api/events';
   const rows = await c.call<any[]>('GET', path, { query: { from, to } });

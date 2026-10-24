@@ -84,7 +84,11 @@ export function makeServer(store: Store) {
     const cookies = parseCookies(req.headers.cookie);
     const bearer = /^Bearer (.+)$/i.exec(String(req.headers.authorization ?? ''))?.[1];
     // A CLI/MCP agent authenticates with a long-lived agent token instead of a cookie.
-    let user: Row | null = (userByToken(store, cookies.sid) ?? userByAgentToken(store, bearer)) as Row | null;
+    // `via` lets routes distinguish them: token management must be a browser session,
+    // so a leaked agent token cannot mint replacements or revoke its siblings.
+    const cookieUser = userByToken(store, cookies.sid) as Row | null;
+    const via = cookieUser ? 'cookie' : bearer ? 'token' : null;
+    let user: Row | null = (cookieUser ?? userByAgentToken(store, bearer)) as Row | null;
     // Trust X-Forwarded-For only behind a proxy you control; otherwise a client can
     // rotate the header to dodge the per-IP login limit.
     const forwarded = process.env.TRUST_PROXY === '1'
@@ -117,7 +121,7 @@ export function makeServer(store: Store) {
       if (body !== undefined && typeof body !== 'object') { send(400, { error: 'json_object_required' }); return; }
 
       try {
-        const result = await (route.fn as any)({ store, user, params, query: url.searchParams, body, ip });
+        const result = await (route.fn as any)({ store, user, via, params, query: url.searchParams, body, ip });
         const headers: Record<string, string> = {};
         // Only an explicit `session` field sets the cookie. Inferring it from any
         // field named `token` once clobbered the session with an ICS token.

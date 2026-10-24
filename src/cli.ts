@@ -108,7 +108,8 @@ async function main() {
     case 'token': {
       if (sub === 'create') result = await client.call('POST', '/api/agent-tokens', { body: { name: flags.name ?? 'agent' } });
       else if (sub === 'list') result = await client.call('GET', '/api/agent-tokens');
-      else if (sub === 'revoke') result = await client.call('DELETE', `/api/agent-tokens/${encodeURIComponent(pos[2] ?? '')}`);
+      else if (sub === 'revoke') result = await client.call('POST', '/api/agent-tokens/revoke',
+        { body: { token: pos[2] ?? '' } });
       else throw new ApiError(400, 'token create|list|revoke <token>');
       break;
     }

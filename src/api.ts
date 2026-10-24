@@ -12,6 +12,7 @@ const DAY = 86400000;
 export type Ctx = {
   store: Store;
   user: Row | null;
+  via: 'cookie' | 'token' | null;
   params: Record<string, string>;
   query: URLSearchParams;
   body: any;
@@ -33,6 +34,14 @@ export { HttpError };
 function needUser(ctx: Ctx): Row {
   if (!ctx.user) throw new HttpError(401, 'need_login');
   return ctx.user;
+}
+
+// Token management is a browser-session action: an agent token must not be able
+// to mint replacements (revocation would otherwise never really revoke).
+function needSession(ctx: Ctx): Row {
+  const u = needUser(ctx);
+  if (ctx.via !== 'cookie') throw new HttpError(403, 'session_required');
+  return u;
 }
 
 function membership(ctx: Ctx, calendarId: string): Row | null {
@@ -244,14 +253,14 @@ export const routes = {
   // Bearer tokens for CLI/MCP agents. The full token is shown once, at creation;
   // the list only ever exposes a prefix so a leaked response cannot replay it.
   'GET /api/agent-tokens': (ctx: Ctx) => {
-    const u = needUser(ctx);
+    const u = needSession(ctx);
     return ctx.store.all(
       `select substr(token, 1, 10) || '…' as token_prefix, name, created_at, last_used_at, revoked_at
        from agent_tokens where user_id = ? order by created_at desc`, String(u.id));
   },
 
   'POST /api/agent-tokens': (ctx: Ctx) => {
-    const u = needUser(ctx);
+    const u = needSession(ctx);
     const live = Number(ctx.store.get(
       'select count(*) as n from agent_tokens where user_id = ? and revoked_at is null', String(u.id))?.n ?? 0);
     if (live >= 10) throw new HttpError(400, 'too_many_tokens');
@@ -259,12 +268,15 @@ export const routes = {
     return { token: createAgentToken(ctx.store, String(u.id), name), name };
   },
 
-  'DELETE /api/agent-tokens/:token': (ctx: Ctx) => {
-    const u = needUser(ctx);
+  // The token travels in the body, not the URL, so proxy access logs cannot replay it.
+  'POST /api/agent-tokens/revoke': (ctx: Ctx) => {
+    const u = needSession(ctx);
+    const token = String(ctx.body?.token ?? '');
+    if (!token) throw new HttpError(400, 'token_required');
     const row = ctx.store.get('select 1 as x from agent_tokens where token = ? and user_id = ?',
-      ctx.params.token, String(u.id));
+      token, String(u.id));
     if (!row) throw new HttpError(404, 'no_such_token');
-    ctx.store.run('update agent_tokens set revoked_at = ? where token = ?', Date.now(), ctx.params.token);
+    ctx.store.run('update agent_tokens set revoked_at = ? where token = ?', Date.now(), token);
     return { revoked: true };
   },
 

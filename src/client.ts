@@ -8,8 +8,7 @@ export const CONFIG_PATH = join(homedir(), '.shared-calendar-agent.json');
 export type ClientConfig = { base: string; token?: string; calendar?: string; tz?: string };
 
 export function loadConfig(overrides: Partial<ClientConfig> = {}): ClientConfig {
-  let file: Partial<ClientConfig> = {};
-  try { file = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')); } catch { /* no config yet */ }
+  const file = readFileConfig();
   return {
     base: overrides.base ?? process.env.CAL_BASE ?? file.base ?? 'http://127.0.0.1:8787',
     token: overrides.token ?? process.env.CAL_TOKEN ?? file.token,
@@ -18,8 +17,13 @@ export function loadConfig(overrides: Partial<ClientConfig> = {}): ClientConfig 
   };
 }
 
+function readFileConfig(): Partial<ClientConfig> {
+  try { return JSON.parse(readFileSync(CONFIG_PATH, 'utf8')); } catch { return {}; }
+}
+
 export function saveConfig(patch: Partial<ClientConfig>): ClientConfig {
-  const merged = { ...loadConfig(), ...patch };
+  // Never fold env vars into the file: CAL_TOKEN is per-invocation, the file is durable.
+  const merged = { ...readFileConfig(), ...patch };
   writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2));
   return merged;
 }
@@ -44,7 +48,7 @@ export class Client {
   }
 
   me() {
-    this.meCache ??= this.call('GET', '/api/me');
+    this.meCache ??= this.call('GET', '/api/me').catch((e) => { this.meCache = undefined; throw e; });
     return this.meCache;
   }
 

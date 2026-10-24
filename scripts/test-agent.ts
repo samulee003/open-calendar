@@ -60,6 +60,19 @@ ok('bad bearer is 401', badRes.status === 401 && bad.status === 401);
 const bearerMe = await fetch(base + '/api/me', { headers: { authorization: `Bearer ${token}` } });
 ok('bearer token authenticates', bearerMe.status === 200);
 
+// A leaked agent token must not be able to mint replacements or revoke siblings.
+const mintAsAgent = await fetch(base + '/api/agent-tokens', {
+  method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: '{}',
+});
+ok('agent token cannot mint tokens', mintAsAgent.status === 403);
+const listAsAgent = await fetch(base + '/api/agent-tokens', { headers: { authorization: `Bearer ${token}` } });
+ok('agent token cannot list tokens', listAsAgent.status === 403);
+const revokeAsAgent = await fetch(base + '/api/agent-tokens/revoke', {
+  method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+  body: JSON.stringify({ token }),
+});
+ok('agent token cannot revoke tokens', revokeAsAgent.status === 403);
+
 // ---- tool core over bearer ----
 const c = new Client({ base, token, calendar: calId, tz: 'Asia/Taipei' });
 
@@ -125,8 +138,9 @@ const labels = await T.listLabels(c, {}) as any[];
 ok('list_labels works', labels.length === 3);
 
 // ---- revocation actually revokes ----
-const rev = await req('DELETE', `/api/agent-tokens/${token}`, undefined, ca);
+const rev = await req('POST', '/api/agent-tokens/revoke', { token }, ca);
 ok('revoke token', rev.status === 200 && rev.data.revoked === true);
+ok('revoking an unknown token is 404', (await req('POST', '/api/agent-tokens/revoke', { token: 'cal_nope' }, ca)).status === 404);
 let revoked401 = false;
 try { await T.listCalendars(c); } catch (e) { revoked401 = e instanceof ApiError && e.status === 401; }
 ok('revoked token is rejected', revoked401);

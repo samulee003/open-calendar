@@ -176,6 +176,8 @@ MCP stdio 子进程全部走一遍(41 个断言)。
 - 所有寫入請求都是同源檢查 + `SameSite=Lax` 的 HttpOnly session cookie;跨站 POST 會被 403 掉。
 - Agent token 是 `cal_` 前缀的 192-bit 随机 bearer:只在建立时回显一次,列表只显示前缀,可随时撤销;
   撤销即刻生效(下一个请求就 401,有测试)。
+- **token 的管理本身只能从浏览器 session 做**:agent token 不能替自己续发新 token、也不能撤销其他 token
+  (否则泄漏的 token 撤销后还能复活);撤销时 token 放在 POST body,不会留在 proxy 访问日志的 URL 里。
 - 密碼 scrypt 加鹽,不會出現在 log。
 - **登入限速**:15 分鐘內同一 email 失敗 8 次、或同一 IP 失敗 30 次即回 429(有測試)。
   放在 reverse proxy 後面時設 `TRUST_PROXY=1`,否則每個請求看起來都來自 proxy。
