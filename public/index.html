@@ -40,6 +40,7 @@
     <button id="open-batch">批次匯入</button>
     <button id="open-cal">日曆／邀請</button>
     <button id="open-sub">手機訂閱</button>
+    <button id="open-memo">備忘</button>
     <button id="logout">退出</button>
   </header>
 
@@ -108,6 +109,8 @@
     </label>
     <label>地點<input name="location" maxlength="200"></label>
     <label>備註<textarea name="note" rows="3" maxlength="2000"></textarea></label>
+    <div class="hint">標在誰身上（可不選）</div>
+    <div id="vm-picker" class="vm-picker"></div>
     <div class="actions">
       <button type="button" id="add-cancel">取消</button>
       <button type="submit" class="primary">保存</button>
@@ -140,7 +143,32 @@
   <hr>
   <p class="hint">用邀請碼加入別人的日曆</p>
   <div class="row"><input id="join-code" maxlength="16" placeholder="ABCDEFGHJK"><button type="button" id="join">加入</button></div>
+  <hr>
+  <p class="hint">家庭成員（小孩、寵物、車…）：新增後可以在行程上標「標在誰身上」。目前管理的是上方選取的日曆。</p>
+  <ul id="vm-manage" class="sub-list"></ul>
+  <div class="row">
+    <input id="vm-name" maxlength="40" placeholder="名字">
+    <select id="vm-type">
+      <option value="child">小孩</option>
+      <option value="pet">寵物</option>
+      <option value="car">車</option>
+      <option value="grandfather">爺爺</option>
+      <option value="grandmother">奶奶</option>
+      <option value="other">其他</option>
+    </select>
+    <button type="button" id="vm-add">新增成員</button>
+  </div>
   <div class="actions"><button type="button" id="cal-close">關閉</button></div>
+</dialog>
+
+<dialog id="dlg-memo">
+  <h3>備忘</h3>
+  <p class="hint">不屬於任何行程的筆記，例如「工人放假到月底」「記得多多洗澡」。</p>
+  <div class="row"><input id="memo-title" maxlength="120" placeholder="標題"><label class="chk"><input id="memo-pinned" type="checkbox"> 置頂</label></div>
+  <textarea id="memo-body" rows="4" maxlength="2000" placeholder="內容（可留空）"></textarea>
+  <button type="button" id="memo-add" class="primary">新增</button>
+  <ul id="memo-list" class="sub-list"></ul>
+  <div class="actions"><button type="button" id="memo-close">關閉</button></div>
 </dialog>
 
 <dialog id="dlg-sub">

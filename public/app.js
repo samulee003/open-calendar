@@ -38,7 +38,7 @@ const dayKey = (r) => r.all_day
   : dayKeyFmt.format(new Date(r.start_at));
 const hhmm = (ms) => new Intl.DateTimeFormat('zh-TW', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(ms));
 
-const state = { me: null, calendars: [], activeCal: null, labels: [], events: [], byDay: new Map(), y: 0, m: 0, sel: null, labelFilter: null, editing: null };
+const state = { me: null, calendars: [], activeCal: null, labels: [], virtualMembers: [], selectedVms: new Set(), events: [], byDay: new Map(), y: 0, m: 0, sel: null, labelFilter: null, editing: null };
 
 // ---------- quick add (natural language) ----------
 $('#quick-form').addEventListener('submit', async (e) => {
@@ -135,6 +135,7 @@ async function loadCalendars() {
   }
   if (!state.activeCal || !state.calendars.some((c) => c.id === state.activeCal)) state.activeCal = state.calendars[0].id;
   state.labels = await api(`/api/calendars/${state.activeCal}/labels`);
+  state.virtualMembers = await api(`/api/calendars/${state.activeCal}/virtual-members`);
   drawSidebar();
   fillSelects();
 }
@@ -282,11 +283,33 @@ function rruleFrom(repeat, dateStr) {
   return 'RRULE:FREQ=DAILY';
 }
 
+function renderVmPicker() {
+  const box = $('#vm-picker'); box.textContent = '';
+  if (!state.virtualMembers.length) {
+    box.append(el('span', { class: 'hint', text: '尚未建立家庭成員（可在「日曆／邀請」新增）' }));
+    return;
+  }
+  for (const vm of state.virtualMembers) {
+    box.append(el('button', {
+      type: 'button',
+      class: `chip-btn${state.selectedVms.has(vm.id) ? ' on' : ''}`,
+      style: `border-color:${vm.color}`,
+      onclick: () => {
+        if (state.selectedVms.has(vm.id)) state.selectedVms.delete(vm.id); else state.selectedVms.add(vm.id);
+        renderVmPicker();
+      },
+      text: vm.name,
+    }));
+  }
+}
+
 function openAdd(key) {
   state.editing = null;
+  state.selectedVms = new Set();
   const f = $('#add-form');
   f.reset();
   f.elements.date.value = key;
+  renderVmPicker();
   $('#dlg-add').showModal();
 }
 
@@ -312,6 +335,7 @@ $('#add-form').addEventListener('submit', async (e) => {
     label_id: f.get('label_id') ? Number(f.get('label_id')) : null,
     rrule: rruleFrom(f.get('repeat'), date),
     reminders: f.get('reminder') ? [Number(f.get('reminder'))] : [],
+    virtual_attendees: [...state.selectedVms],
   };
   try {
     if (state.editing) await api(`/api/events/${state.editing}`, { method: 'PUT', body });
@@ -330,6 +354,7 @@ async function openDetail(r) {
     el('b', { text: r.title }),
     el('div', { class: 'when', text: timeText(r) }),
     r.note ? el('div', { class: 'note', text: r.note }) : null,
+    d.virtual_attendees?.length ? el('div', { class: 'when', text: `成員：${d.virtual_attendees.map((v) => v.name).join('、')}` }) : null,
   ));
 
   const reacts = el('div', { class: 'reacts' });
@@ -370,7 +395,7 @@ async function openDetail(r) {
   body.append(ops);
 }
 
-function editPrefill(r) {
+async function editPrefill(r) {
   state.editing = r.id;
   const f = $('#add-form'); f.reset();
   const d = new Date(r.start_at);
@@ -380,6 +405,12 @@ function editPrefill(r) {
   if (!r.all_day) { f.elements.start.value = hhmm(r.start_at); f.elements.end.value = hhmm(r.end_at); }
   f.elements.note.value = r.note;
   f.elements.location.value = r.location;
+  state.selectedVms = new Set();
+  try {
+    const detail = await api(`/api/events/${r.id}`);
+    for (const vm of detail.virtual_attendees ?? []) state.selectedVms.add(vm.id);
+  } catch { /* keep the selection empty */ }
+  renderVmPicker();
   $('#dlg-add').showModal();
 }
 
@@ -474,7 +505,10 @@ $('#prev').addEventListener('click', () => { state.m--; if (state.m < 0) { state
 $('#next').addEventListener('click', () => { state.m++; if (state.m > 11) { state.m = 0; state.y++; } renderMonth(); });
 $('#today').addEventListener('click', () => { const n = new Date(); state.y = n.getFullYear(); state.m = n.getMonth(); state.sel = null; renderMonth(); });
 
-$('#open-cal').addEventListener('click', () => $('#dlg-cal').showModal());
+$('#open-cal').addEventListener('click', () => {
+  $('#dlg-cal').showModal();
+  loadVmManage($('#invite-cal').value || state.activeCal);
+});
 $('#cal-close').addEventListener('click', () => $('#dlg-cal').close());
 $('#create-cal').addEventListener('click', async () => {
   const name = $('#new-cal-name').value.trim();
@@ -546,6 +580,90 @@ $('#sub-make').addEventListener('click', async () => {
   $('#sub-url').value = `${location.origin}${out.path}`;
   $('#sub-url').select();
   loadSubs($('#sub-cal').value);
+});
+
+// ---------- virtual members (family members without accounts) ----------
+const VM_TYPE_LABEL = { child: '小孩', pet: '寵物', car: '車', grandfather: '爺爺', grandmother: '奶奶', other: '其他' };
+
+async function loadVmManage(calId) {
+  const list = $('#vm-manage');
+  if (!list) return;
+  list.textContent = '';
+  let rows = [];
+  try { rows = await api(`/api/calendars/${calId}/virtual-members`); } catch { rows = []; }
+  if (!rows.length) {
+    list.append(el('li', { class: 'hint', text: '還沒有家庭成員' }));
+    return;
+  }
+  for (const vm of rows) {
+    list.append(el('li', {},
+      el('span', {}, `${vm.name}（${VM_TYPE_LABEL[vm.account_type] ?? vm.account_type}）`),
+      el('button', {
+        class: 'danger', text: '刪除',
+        onclick: async () => {
+          if (!confirm(`刪除「${vm.name}」？行程上的標記會一起消失。`)) return;
+          await api(`/api/virtual-members/${vm.id}`, { method: 'DELETE' });
+          await loadCalendars();
+          loadVmManage(calId);
+        },
+      })));
+  }
+}
+
+$('#invite-cal').addEventListener('change', () => loadVmManage($('#invite-cal').value));
+$('#vm-add').addEventListener('click', async () => {
+  const name = $('#vm-name').value.trim();
+  if (!name) return;
+  const calId = $('#invite-cal').value || state.activeCal;
+  try {
+    await api(`/api/calendars/${calId}/virtual-members`, {
+      method: 'POST', body: { name, account_type: $('#vm-type').value },
+    });
+    $('#vm-name').value = '';
+    await loadCalendars();
+    loadVmManage(calId);
+  } catch (err) { alert(`新增失敗：${err.message}`); }
+});
+
+// ---------- memos ----------
+async function loadMemos() {
+  const list = $('#memo-list');
+  if (!list) return;
+  list.textContent = '';
+  let rows = [];
+  try { rows = await api(`/api/calendars/${state.activeCal}/memos`); } catch { rows = []; }
+  if (!rows.length) {
+    list.append(el('li', { class: 'hint', text: '還沒有備忘' }));
+    return;
+  }
+  for (const m of rows) {
+    list.append(el('li', {},
+      el('b', { text: `${m.pinned ? '★ ' : ''}${m.title || '(無標題)'}` }),
+      m.body ? el('div', { class: 'hint', text: m.body }) : null,
+      el('button', {
+        class: 'danger', text: '刪除',
+        onclick: async () => {
+          if (!confirm('刪除這則備忘？')) return;
+          await api(`/api/memos/${m.id}`, { method: 'DELETE' });
+          loadMemos();
+        },
+      })));
+  }
+}
+
+$('#open-memo').addEventListener('click', () => { $('#dlg-memo').showModal(); loadMemos(); });
+$('#memo-close').addEventListener('click', () => $('#dlg-memo').close());
+$('#memo-add').addEventListener('click', async () => {
+  const title = $('#memo-title').value.trim();
+  const body = $('#memo-body').value;
+  if (!title && !body.trim()) return;
+  try {
+    await api(`/api/calendars/${state.activeCal}/memos`, {
+      method: 'POST', body: { title, body, pinned: $('#memo-pinned').checked },
+    });
+    $('#memo-title').value = ''; $('#memo-body').value = ''; $('#memo-pinned').checked = false;
+    loadMemos();
+  } catch (err) { alert(`新增失敗：${err.message}`); }
 });
 
 if ('serviceWorker' in navigator) {

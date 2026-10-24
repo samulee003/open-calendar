@@ -72,8 +72,21 @@ function intOrNull(v: unknown): number | null {
 type EventInput = {
   title: string; note: string; location: string; allDay: boolean;
   start_at: number; end_at: number; label_id: number | null;
-  rrule: string | null; reminders: number[]; attendees: string[]; tz: string;
+  rrule: string | null; reminders: number[]; attendees: string[]; virtualAttendees: string[]; tz: string;
 };
+
+const VIRTUAL_TYPES = ['child', 'pet', 'car', 'grandfather', 'grandmother', 'other'];
+
+/** Virtual members must belong to the same calendar as the event. */
+function virtualIds(ctx: Ctx, calendarId: string, raw: unknown): string[] {
+  if (!Array.isArray(raw)) throw new HttpError(400, 'virtual_attendees_must_be_array');
+  const ids = [...new Set(raw.map((x) => String(x)))].slice(0, 50);
+  for (const id of ids) {
+    if (!ctx.store.get('select 1 as x from virtual_members where id = ? and calendar_id = ?', id, calendarId))
+      throw new HttpError(400, `bad_virtual_member:${id}`);
+  }
+  return ids;
+}
 
 function resolveZone(raw: any, fallback: string): string {
   return isValidZone(raw?.tz) ? String(raw.tz) : fallback;
@@ -111,6 +124,7 @@ function normalizeEvent(raw: any, tz: string): EventInput {
     ? raw.reminders.map((x: unknown) => Math.trunc(Number(x))).filter((n: number) => Number.isFinite(n) && n >= 0 && n <= 60 * 24 * 60)
     : [];
   const attendees = Array.isArray(raw?.attendees) ? raw.attendees.map(String) : [];
+  const virtualAttendees = Array.isArray(raw?.virtual_attendees) ? raw.virtual_attendees.map(String) : [];
 
   return {
     title,
@@ -123,6 +137,7 @@ function normalizeEvent(raw: any, tz: string): EventInput {
     rrule,
     reminders,
     attendees,
+    virtualAttendees,
     tz: zone,
   };
 }
@@ -139,6 +154,8 @@ function insertEvent(ctx: Ctx, calendarId: string, ev: EventInput, userId: strin
   );
   for (const minutes of ev.reminders) ctx.store.run('insert or ignore into reminders (event_id, minutes) values (?,?)', id, minutes);
   for (const a of ev.attendees) ctx.store.run('insert or ignore into attendees (event_id, user_id) values (?,?)', id, a);
+  for (const v of virtualIds(ctx, calendarId, ev.virtualAttendees))
+    ctx.store.run('insert or ignore into virtual_attendees (event_id, virtual_id) values (?,?)', id, v);
   return id;
 }
 
@@ -350,6 +367,102 @@ export const routes = {
     return { ok: true };
   },
 
+  // ---------- virtual members (kids, pets, cars…) ----------
+  'GET /api/calendars/:id/virtual-members': (ctx: Ctx) => {
+    mustView(ctx, ctx.params.id);
+    return ctx.store.all(
+      'select * from virtual_members where calendar_id = ? order by name', ctx.params.id);
+  },
+
+  'POST /api/calendars/:id/virtual-members': (ctx: Ctx) => {
+    mustView(ctx, ctx.params.id);
+    const name = String(ctx.body?.name ?? '').trim();
+    if (!name) throw new HttpError(400, 'name_required');
+    const type = VIRTUAL_TYPES.includes(String(ctx.body?.account_type)) ? String(ctx.body.account_type) : 'other';
+    const birthday = /^\d{4}-\d{2}-\d{2}$/.test(String(ctx.body?.birthday ?? '')) ? String(ctx.body.birthday) : null;
+    const id = newId('vm');
+    ctx.store.run(
+      `insert into virtual_members (id, calendar_id, name, account_type, color, birthday, shows_birthday, created_at)
+       values (?,?,?,?,?,?,?,?)`,
+      id, ctx.params.id, name.slice(0, 60), type, String(ctx.body?.color ?? '#888888').slice(0, 20),
+      birthday, ctx.body?.shows_birthday ? 1 : 0, Date.now());
+    return { id, name: name.slice(0, 60), account_type: type };
+  },
+
+  'PUT /api/virtual-members/:id': (ctx: Ctx) => {
+    const vm = ctx.store.get('select * from virtual_members where id = ?', ctx.params.id);
+    if (!vm) throw new HttpError(404, 'no_such_virtual_member');
+    mustView(ctx, String(vm.calendar_id));
+    const name = ctx.body?.name !== undefined ? String(ctx.body.name).trim() : String(vm.name);
+    if (!name) throw new HttpError(400, 'name_required');
+    const type = ctx.body?.account_type !== undefined
+      ? (VIRTUAL_TYPES.includes(String(ctx.body.account_type)) ? String(ctx.body.account_type) : 'other')
+      : String(vm.account_type);
+    const birthday = ctx.body?.birthday !== undefined
+      ? (/^\d{4}-\d{2}-\d{2}$/.test(String(ctx.body.birthday)) ? String(ctx.body.birthday) : null)
+      : (vm.birthday == null ? null : String(vm.birthday));
+    ctx.store.run(
+      'update virtual_members set name=?, account_type=?, color=?, birthday=?, shows_birthday=? where id=?',
+      name.slice(0, 60), type,
+      ctx.body?.color !== undefined ? String(ctx.body.color).slice(0, 20) : String(vm.color),
+      birthday,
+      ctx.body?.shows_birthday !== undefined ? (ctx.body.shows_birthday ? 1 : 0) : Number(vm.shows_birthday),
+      ctx.params.id);
+    return { ok: true, id: ctx.params.id };
+  },
+
+  'DELETE /api/virtual-members/:id': (ctx: Ctx) => {
+    const vm = ctx.store.get('select * from virtual_members where id = ?', ctx.params.id);
+    if (!vm) throw new HttpError(404, 'no_such_virtual_member');
+    mustView(ctx, String(vm.calendar_id));
+    ctx.store.run('delete from virtual_members where id = ?', ctx.params.id);
+    return { ok: true };
+  },
+
+  // ---------- memos ----------
+  'GET /api/calendars/:id/memos': (ctx: Ctx) => {
+    mustView(ctx, ctx.params.id);
+    return ctx.store.all(
+      `select id, title, body, pinned, created_by, created_at, updated_at from memos
+       where calendar_id = ? and deleted_at is null order by pinned desc, updated_at desc`, ctx.params.id);
+  },
+
+  'POST /api/calendars/:id/memos': (ctx: Ctx) => {
+    const u = needUser(ctx);
+    mustView(ctx, ctx.params.id);
+    const title = String(ctx.body?.title ?? '').trim().slice(0, 200);
+    const body = String(ctx.body?.body ?? '').slice(0, 20000);
+    if (!title && !body) throw new HttpError(400, 'memo_empty');
+    const id = newId('memo');
+    const now = Date.now();
+    ctx.store.run(
+      'insert into memos (id, calendar_id, title, body, pinned, created_by, created_at, updated_at) values (?,?,?,?,?,?,?,?)',
+      id, ctx.params.id, title, body, ctx.body?.pinned ? 1 : 0, String(u.id), now, now);
+    return { id };
+  },
+
+  'PUT /api/memos/:id': (ctx: Ctx) => {
+    const m = ctx.store.get('select * from memos where id = ? and deleted_at is null', ctx.params.id);
+    if (!m) throw new HttpError(404, 'no_such_memo');
+    mustView(ctx, String(m.calendar_id));
+    const title = ctx.body?.title !== undefined ? String(ctx.body.title).trim().slice(0, 200) : String(m.title);
+    const body = ctx.body?.body !== undefined ? String(ctx.body.body).slice(0, 20000) : String(m.body);
+    if (!title && !body) throw new HttpError(400, 'memo_empty');
+    ctx.store.run('update memos set title=?, body=?, pinned=?, updated_at=? where id=?',
+      title, body,
+      ctx.body?.pinned !== undefined ? (ctx.body.pinned ? 1 : 0) : Number(m.pinned),
+      Date.now(), ctx.params.id);
+    return { ok: true, id: ctx.params.id };
+  },
+
+  'DELETE /api/memos/:id': (ctx: Ctx) => {
+    const m = ctx.store.get('select * from memos where id = ? and deleted_at is null', ctx.params.id);
+    if (!m) throw new HttpError(404, 'no_such_memo');
+    mustView(ctx, String(m.calendar_id));
+    ctx.store.run('update memos set deleted_at = ? where id = ?', Date.now(), ctx.params.id);
+    return { ok: true };
+  },
+
   // Natural-language quick add: "明天下午3點看牙醫" -> one event, or a preview when
   // the sentence lacks a date/time (so the caller can ask instead of guessing).
   'POST /api/calendars/:id/quick-add': (ctx: Ctx) => {
@@ -434,6 +547,9 @@ export const routes = {
       reactions: reactions.map((r) => ({ emoji: String(r.emoji), count: Number(r.n), mine: Number(r.mine ?? 0) > 0 })),
       reminders: ctx.store.all('select minutes from reminders where event_id = ?', ctx.params.id),
       attendees: ctx.store.all('select user_id from attendees where event_id = ?', ctx.params.id),
+      virtual_attendees: ctx.store.all(
+        `select v.id, v.name, v.account_type, v.color from virtual_attendees va
+         join virtual_members v on v.id = va.virtual_id where va.event_id = ? order by v.name`, ctx.params.id),
     };
   },
 
@@ -460,6 +576,12 @@ export const routes = {
       ev.label_id, ev.rrule, Date.now(), ctx.params.id);
     ctx.store.run('delete from reminders where event_id = ?', ctx.params.id);
     for (const m of ev.reminders) ctx.store.run('insert or ignore into reminders (event_id, minutes) values (?,?)', ctx.params.id, m);
+    // Omitted virtual_attendees leaves the existing ones alone (same rule as notes).
+    if (ctx.body?.virtual_attendees !== undefined) {
+      const ids = virtualIds(ctx, String(e.calendar_id), ctx.body.virtual_attendees);
+      ctx.store.run('delete from virtual_attendees where event_id = ?', ctx.params.id);
+      for (const v of ids) ctx.store.run('insert into virtual_attendees (event_id, virtual_id) values (?,?)', ctx.params.id, v);
+    }
     return { ok: true };
   },
 

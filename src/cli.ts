@@ -30,9 +30,22 @@ const USAGE = `shared-calendar agent CLI
                     [--location …] [--label-id N] [--reminders …] [--json]
   delete <event-id> [--scope all|future|occurrence] [--occ T] [--json]
   override <event-id> --occ T [--title …] [--start …] [--end …] [--gone]
+  copy <event-id> [--start T | --shift-days N] [--occurrence T]
+       [--to-calendar ID] [--title T] [--keep-recurrence]
   free [--date YYYY-MM-DD] [--duration 60] [--from 08:00] [--to 22:00] [--json]
   comment <event-id> <文字…>
   labels | subscribe [--days N] | subscriptions | unsubscribe <token>
+
+家庭成員（虛擬）與備忘
+  members                                     列出虛擬成員
+  member add --name 名字 [--type child|pet|car|grandfather|grandmother|other]
+             [--color #hex] [--birthday YYYY-MM-DD] [--show-birthday]
+  member update <id> [--name …] [--type …] [--color …] [--birthday …]
+  member delete <id>
+  memos                                       列出備忘
+  memo add --title 標題 [--body 內容] [--pinned]
+  memo update <id> [--title …] [--body …] [--pinned]
+  memo delete <id>
 
 時間格式: epoch 毫秒、ISO 8601、YYYY-MM-DD、"YYYY-MM-DD HH:MM"（無時區資訊時以 --tz／帳號時區解讀）
 全域 flags: --base URL --token TOKEN --tz Z --json`;
@@ -66,6 +79,13 @@ function csvNums(v: string | boolean | undefined): number[] | undefined {
   return v.split(',').map((x) => Number(x.trim())).filter(Number.isFinite);
 }
 
+// "true"/"false" string values come from --flag=false, which lets an update clear a boolean.
+function boolFlag(v: string | boolean | undefined): boolean | undefined {
+  if (v === true || v === 'true' || v === '1') return true;
+  if (v === 'false' || v === '0') return false;
+  return undefined;
+}
+
 function eventArgs(pos: string[], flags: Record<string, string | boolean>): T.Args {
   return {
     event_id: pos[1],
@@ -76,6 +96,8 @@ function eventArgs(pos: string[], flags: Record<string, string | boolean>): T.Ar
     all_day: flags['all-day'] === true ? true : undefined,
     tz: flags.tz, calendar_id: flags.calendar,
     occurrence_start: flags.occ, scope: flags.scope, gone: flags.gone === true ? true : undefined,
+    shift_days: flagNum(flags, 'shift-days'), to_calendar_id: flags['to-calendar'],
+    keep_recurrence: boolFlag(flags['keep-recurrence']),
   };
 }
 
@@ -158,6 +180,40 @@ async function main() {
     case 'delete': result = await T.deleteEvent(client, eventArgs(pos, flags)); break;
 
     case 'override': result = await T.overrideOccurrence(client, eventArgs(pos, flags)); break;
+
+    case 'copy': result = await T.copyEvent(client, eventArgs(pos, flags)); break;
+
+    case 'members': result = await T.listVirtualMembers(client, { calendar_id: flags.calendar }); break;
+
+    case 'member': {
+      if (sub === 'add') result = await T.createVirtualMember(client, {
+        calendar_id: flags.calendar, name: flags.name, account_type: flags.type,
+        color: flags.color, birthday: flags.birthday,
+        shows_birthday: boolFlag(flags['show-birthday']),
+      });
+      else if (sub === 'update') result = await T.updateVirtualMember(client, {
+        virtual_id: pos[2], name: flags.name, account_type: flags.type,
+        color: flags.color, birthday: flags.birthday,
+        shows_birthday: boolFlag(flags['show-birthday']),
+      });
+      else if (sub === 'delete') result = await T.deleteVirtualMember(client, { virtual_id: pos[2] });
+      else throw new ApiError(400, 'member add|update|delete <id>');
+      break;
+    }
+
+    case 'memos': result = await T.listMemos(client, { calendar_id: flags.calendar }); break;
+
+    case 'memo': {
+      if (sub === 'add') result = await T.createMemo(client, {
+        calendar_id: flags.calendar, title: flags.title, body: flags.body, pinned: boolFlag(flags.pinned),
+      });
+      else if (sub === 'update') result = await T.updateMemo(client, {
+        memo_id: pos[2], title: flags.title, body: flags.body, pinned: boolFlag(flags.pinned),
+      });
+      else if (sub === 'delete') result = await T.deleteMemo(client, { memo_id: pos[2] });
+      else throw new ApiError(400, 'memo add|update|delete <id>');
+      break;
+    }
 
     case 'free': {
       const r = await T.findFreeSlots(client, {

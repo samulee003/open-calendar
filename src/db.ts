@@ -141,6 +141,37 @@ create table if not exists agent_tokens (
   revoked_at   integer
 );
 
+-- People without accounts who still appear on events: kids, pets, cars…
+create table if not exists virtual_members (
+  id              text primary key,
+  calendar_id     text not null references calendars(id) on delete cascade,
+  name            text not null,
+  account_type    text not null default 'other',
+  color           text not null default '#888888',
+  birthday        text,
+  shows_birthday  integer not null default 0,
+  created_at      integer not null
+);
+
+create table if not exists virtual_attendees (
+  event_id   text not null references events(id) on delete cascade,
+  virtual_id text not null references virtual_members(id) on delete cascade,
+  primary key (event_id, virtual_id)
+);
+
+-- Calendar-level notes, independent of any event.
+create table if not exists memos (
+  id          text primary key,
+  calendar_id text not null references calendars(id) on delete cascade,
+  title       text not null default '',
+  body        text not null default '',
+  pinned      integer not null default 0,
+  created_by  text not null references users(id),
+  created_at  integer not null,
+  updated_at  integer not null,
+  deleted_at  integer
+);
+
 -- Failed sign-ins, so a password guesser gets throttled instead of us being the oracle.
 create table if not exists login_failures (
   id    integer primary key autoincrement,

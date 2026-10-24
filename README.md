@@ -49,6 +49,9 @@ node scripts/selftest.ts         # 端對端:鑑權、成員、批次、重複�
 | 重複 | RFC 5545 `RRULE` 子集:`DAILY/WEEKLY/MONTHLY/YEARLY`、`INTERVAL`、`BYDAY`(含 `1MO`/`-1MO`)、`BYMONTHDAY`(含 `-1`)、`BYMONTH`、`COUNT`、`UNTIL` |
 | 單次例外 | 「只改這一次」寫入 override,「只刪這一次」寫 `EXDATE`,「刪這天以後」改寫 `UNTIL` |
 | 社交層 | 每個行程的留言串與按讚(👍 ❤️ 🎉 😂),同日曆成員都看得到 |
+| 家庭成員 | 沒有帳號的人(小孩、寵物、車…)可建成**虛擬成員**,掛在行程上;刪除成員會自動清掉標記 |
+| 複製行程 | 複製單一事件或重複系列的**某一次**到新時間/另一個日曆(可選帶走重複規則) |
+| 備忘 | 不屬於任何行程的日曆級筆記,可置頂 |
 | 批次匯入 | 一次送 500 筆;網頁端貼一行一筆,或 CLI 讀 CSV |
 | 手機同步 | 每個日曆可產生**唯讀 ICS 訂閱網址**,iPhone 內建日历、Android 的 DAVx⁵／Calendri 都能收 |
 | 時區 | 依 IANA 時區名在**當地牆上時間**展開重複,不是用 UTC 日期硬算 |
@@ -132,6 +135,10 @@ node src/cli.ts add --title "古琴班" --start "2026-11-05 19:00" --rrule "FREQ
 node src/cli.ts quick "明天下午3點看牙醫"          # 自然语言;没把握时会回 needs_confirmation
 node src/cli.ts free --date 2026-11-05 --duration 60
 node src/cli.ts show evt_…  |  update evt_… --title "新標題"  |  delete evt_… --scope occurrence --occ 2026-11-12
+node src/cli.ts copy evt_… --shift-days 7        # 複製到下一週;--occurrence 只複製某一次
+node src/cli.ts members                          # 虛擬成員(小孩/寵物)
+node src/cli.ts member add --name 李悅 --type child
+node src/cli.ts memos  |  memo add --title 工人放假 --body "到 11 月底"
 node src/cli.ts comment evt_… 記得帶譜
 node src/cli.ts subscribe --days 365               # 唯读 ICS 订阅网址
 ```
@@ -141,10 +148,13 @@ node src/cli.ts subscribe --days 365               # 唯读 ICS 订阅网址
 
 ### 3. MCP server(给会说 MCP 的 agent)
 
-`src/mcp.ts` 是零依赖的 stdio MCP server,提供 13 个工具:
+`src/mcp.ts` 是零依赖的 stdio MCP server,提供 22 个工具:
 `list_calendars` / `list_events` / `get_event` / `create_event` / `create_events`(批次)/
 `quick_add` / `update_event` / `delete_event` / `override_occurrence`(只改某一次)/
-`find_free_slots` / `add_comment` / `list_labels` / `create_subscription`。
+`copy_event`(复制单次或某一次) / `find_free_slots` / `add_comment` / `list_labels` /
+`create_subscription` /
+`list_virtual_members` / `create_virtual_member` / `update_virtual_member` / `delete_virtual_member`(家庭成員)/
+`list_memos` / `create_memo` / `update_memo` / `delete_memo`(備忘)。
 
 在你的 agent 里登记(Qoder / Claude Desktop 等的 mcp 设置皆同型):
 
@@ -168,8 +178,8 @@ node src/cli.ts subscribe --days 365               # 唯读 ICS 订阅网址
 工具回报刻意紧凑(本地时间标签 + `occurrence_start` epoch),重复规则的展开、override、EXDATE
 都由服务器算好,agent 不需要自己处理 RFC 5545。
 
-验证:`node scripts/test-agent.ts` 会真启服务器,把 token 生命周期、13 个工具、CLI 子进程、
-MCP stdio 子进程全部走一遍(41 个断言)。
+验证:`node scripts/test-agent.ts` 会真启服务器,把 token 生命周期、22 个工具、CLI 子进程、
+MCP stdio 子进程全部走一遍(66 个断言)。
 
 ## 安全邊界(已知,不是沒做)
 

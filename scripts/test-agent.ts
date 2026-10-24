@@ -137,6 +137,62 @@ ok('ICS reachable without any auth', ics.status === 200 && (await ics.text()).in
 const labels = await T.listLabels(c, {}) as any[];
 ok('list_labels works', labels.length === 3);
 
+// ---- virtual members ----
+const kid = await T.createVirtualMember(c, { name: '李悅', account_type: 'child' }) as any;
+fatal('create_virtual_member', !!kid.id, JSON.stringify(kid));
+ok('list_virtual_members', (await T.listVirtualMembers(c, {}) as any[]).some((v) => v.id === kid.id && v.account_type === 'child'));
+
+const withKid = await T.createEvent(c, {
+  title: '李悅古琴班', start: '2026-11-06 18:00', end: '2026-11-06 19:00', virtual_attendees: [kid.id],
+}) as any;
+ok('event created with a virtual attendee', !!withKid.created);
+const kidDetail = await T.getEvent(c, { event_id: withKid.created });
+ok('getEvent names the tagged member', kidDetail.virtual_attendees.map((v: any) => v.name).join() === '李悅');
+
+await T.updateVirtualMember(c, { virtual_id: kid.id, name: '李悅(姐)' });
+ok('update_virtual_member', (await T.listVirtualMembers(c, {}) as any[]).some((v) => v.id === kid.id && v.name === '李悅(姐)'));
+ok('update_event clears tags', (await T.updateEvent(c, { event_id: withKid.created, virtual_attendees: [] })).virtual_attendees.length === 0);
+await T.updateEvent(c, { event_id: withKid.created, virtual_attendees: [kid.id] });
+
+const otherCal = await req('POST', '/api/calendars', { name: '另一個' }, ca);
+const foreign = await req('POST', `/api/calendars/${otherCal.data.id}/virtual-members`, { name: '外人' }, ca);
+const badAttach = await fetch(base + `/api/calendars/${calId}/events`, {
+  method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+  body: JSON.stringify({ title: 'x', start_at: 1900000000000, virtual_attendees: [foreign.data.id] }),
+});
+ok('foreign virtual member is rejected', badAttach.status === 400);
+
+await T.deleteVirtualMember(c, { virtual_id: kid.id });
+ok('deleting a member clears event tags', (await T.getEvent(c, { event_id: withKid.created })).virtual_attendees.length === 0);
+
+// ---- memos ----
+const m1 = await T.createMemo(c, { title: '工人放假', body: '到月底' }) as any;
+const m2 = await T.createMemo(c, { title: '置頂提醒', pinned: true }) as any;
+const memos = await T.listMemos(c, {}) as any[];
+ok('memos listed pinned first', memos.length === 2 && memos[0].id === m2.id && Number(memos[0].pinned) === 1, JSON.stringify(memos));
+ok('memo body kept', memos.find((m: any) => m.id === m1.id)?.body === '到月底');
+await T.updateMemo(c, { memo_id: m1.id, body: '到 11 月底' });
+ok('update_memo', (await T.listMemos(c, {}) as any[]).find((m) => m.id === m1.id)?.body === '到 11 月底');
+await T.deleteMemo(c, { memo_id: m1.id });
+ok('delete_memo hides it', (await T.listMemos(c, {}) as any[]).length === 1);
+
+// ---- copy_event ----
+const copied = await T.copyEvent(c, { event_id: created.created, shift_days: 7 }) as any;
+ok('copy_event shifts by days', !!copied.copied && copied.start.startsWith('2026-11-12'), JSON.stringify(copied));
+const copiedDetail = await T.getEvent(c, { event_id: copied.copied });
+ok('copy keeps duration and reminders',
+  copiedDetail.event.end_at - copiedDetail.event.start_at === 3600000 && copiedDetail.reminders[0] === 30);
+ok('copy does not carry recurrence by default', !copiedDetail.event.rrule);
+
+const occCopy = await T.copyEvent(c, { event_id: weekly.created, occurrence_start: thu2.occurrence_start, start: '2026-11-13 09:00' }) as any;
+const occCopyDetail = await T.getEvent(c, { event_id: occCopy.copied });
+ok('copying an occurrence keeps its override', occCopyDetail.event.title === '古琴班(展延)' && !occCopyDetail.event.rrule, JSON.stringify(occCopyDetail.event));
+const occCopyList = await T.listEvents(c, { from: '2026-11-13', days: 1 });
+ok('copied occurrence lands at the new time', occCopyList.events.some((e: any) => e.id === occCopy.copied && e.start.endsWith('09:00')));
+
+const seriesCopy = await T.copyEvent(c, { event_id: weekly.created, shift_days: 0, keep_recurrence: true }) as any;
+ok('copy_event keep_recurrence', (await T.getEvent(c, { event_id: seriesCopy.copied })).event.rrule === 'RRULE:FREQ=WEEKLY;BYDAY=TH');
+
 // ---- revocation actually revokes ----
 const rev = await req('POST', '/api/agent-tokens/revoke', { token }, ca);
 ok('revoke token', rev.status === 200 && rev.data.revoked === true);
@@ -218,8 +274,10 @@ notify('notifications/initialized');
 const tools = await rpc('tools/list');
 const names = (tools.result?.tools ?? []).map((t: any) => t.name);
 const expected = ['list_calendars', 'list_events', 'get_event', 'create_event', 'create_events', 'quick_add',
-  'update_event', 'delete_event', 'override_occurrence', 'find_free_slots', 'add_comment', 'list_labels', 'create_subscription'];
-fatal('mcp advertises every tool', expected.every((n) => names.includes(n)), JSON.stringify(names));
+  'update_event', 'delete_event', 'override_occurrence', 'find_free_slots', 'add_comment', 'list_labels',
+  'create_subscription', 'copy_event', 'list_virtual_members', 'create_virtual_member', 'update_virtual_member',
+  'delete_virtual_member', 'list_memos', 'create_memo', 'update_memo', 'delete_memo'];
+fatal('mcp advertises every tool', names.length === expected.length && expected.every((n) => names.includes(n)), JSON.stringify(names));
 ok('mcp schemas are objects with descriptions', tools.result.tools.every((t: any) => t.inputSchema?.type === 'object' && typeof t.description === 'string'));
 
 const call = await rpc('tools/call', { name: 'create_event', arguments: { title: 'MCP 事件', start: '2026-11-21 09:00', end: '2026-11-21 10:00' } });
@@ -229,6 +287,13 @@ ok('mcp create_event uses default calendar', !call.result?.isError && !!callOut.
 const listCall = await rpc('tools/call', { name: 'list_events', arguments: { from: '2026-11-21', days: 1 } });
 const listOut = JSON.parse(listCall.result?.content?.[0]?.text ?? '{}');
 ok('mcp list_events sees it', listOut.events?.some((e: any) => e.title === 'MCP 事件'), JSON.stringify(listOut).slice(0, 300));
+
+const memoCall = await rpc('tools/call', { name: 'create_memo', arguments: { title: 'MCP 備忘', body: '給 agent 的' } });
+ok('mcp create_memo', !memoCall.result?.isError && !!JSON.parse(memoCall.result.content[0].text).id, JSON.stringify(memoCall).slice(0, 200));
+const memosCall = await rpc('tools/call', { name: 'list_memos', arguments: {} });
+ok('mcp list_memos', JSON.parse(memosCall.result.content[0].text).some((m: any) => m.title === 'MCP 備忘'));
+const vmsCall = await rpc('tools/call', { name: 'list_virtual_members', arguments: {} });
+ok('mcp list_virtual_members', Array.isArray(JSON.parse(vmsCall.result.content[0].text)));
 
 const errCall = await rpc('tools/call', { name: 'get_event', arguments: { event_id: 'evt_nope' } });
 ok('mcp tool error is isError not protocol error', errCall.result?.isError === true && JSON.parse(errCall.result.content[0].text).status === 404, JSON.stringify(errCall).slice(0, 300));

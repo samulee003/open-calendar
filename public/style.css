@@ -125,3 +125,8 @@ textarea{resize:vertical;font-family:ui-monospace,Consolas,monospace;font-size:1
 @media (prefers-reduced-motion:reduce){
   *{transition:none!important;animation:none!important}
 }
+
+/* virtual members: toggle chips in the event form */
+.vm-picker{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 10px}
+.chip-btn{padding:5px 11px;border:1.5px solid var(--line,#d5d9e4);border-radius:999px;background:#fff;cursor:pointer;font-size:13px}
+.chip-btn.on{background:#eef3ff;border-color:#2f6fed;color:#1c4fc2;font-weight:600}

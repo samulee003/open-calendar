@@ -118,6 +118,9 @@ export async function getEvent(c: Client, args: Args) {
       label_id: e.label_id == null ? undefined : Number(e.label_id),
     }),
     reminders: (r.reminders ?? []).map((x: any) => Number(x.minutes)),
+    virtual_attendees: (r.virtual_attendees ?? []).map((x: any) => ({
+      id: String(x.id), name: String(x.name), account_type: String(x.account_type),
+    })),
     comments: (r.comments ?? []).map((x: any) => ({
       id: String(x.id), name: String(x.name), body: String(x.body),
       at: localLabel(Number(x.created_at), tz, false),
@@ -145,6 +148,7 @@ function eventPayload(c: Client, args: Args, tz: string) {
     location: args.location ?? undefined,
     label_id: args.label_id ?? undefined,
     reminders: args.reminders ?? undefined,
+    virtual_attendees: args.virtual_attendees ?? undefined,
   };
   return compact(payload);
 }
@@ -196,6 +200,7 @@ export async function updateEvent(c: Client, args: Args) {
   }
   if (args.all_day !== undefined) body.all_day = args.all_day === true || args.all_day === 1;
   if (args.reminders !== undefined) body.reminders = args.reminders;
+  if (args.virtual_attendees !== undefined) body.virtual_attendees = args.virtual_attendees;
   const allDay = body.all_day ?? Number(e.all_day) === 1;
   if (allDay && args.date !== undefined) body.start_at = parseWhen(args.date, tz);
   if (args.start !== undefined) body.start_at = parseWhen(args.start, tz);
@@ -293,3 +298,120 @@ export async function listLabels(c: Client, args: Args) {
   const cal = resolveCal(c, args);
   return c.call('GET', `/api/calendars/${encodeURIComponent(cal)}/labels`);
 }
+
+// Copy one event, or one occurrence of a recurring series, to a new time or calendar.
+export async function copyEvent(c: Client, args: Args) {
+  const id = String(args.event_id ?? args.id ?? fail('event_id_required'));
+  const src = await c.call<any>('GET', `/api/events/${encodeURIComponent(id)}`);
+  const e = src.event;
+  const tz = isValidZone(args.tz) ? String(args.tz) : (isValidZone(e.tz) ? String(e.tz) : await tzOf(c));
+  let from = Number(e.start_at);
+  let to = Number(e.end_at);
+  let baseTitle = String(e.title);
+  let baseLocation = String(e.location ?? '');
+  if (args.occurrence_start !== undefined) {
+    const occ = parseWhen(args.occurrence_start, tz);
+    // Occurrences can be moved or renamed by an override, so read the concrete one.
+    const day = await listEvents(c, { calendar_id: String(e.calendar_id), from: occ, to: occ + 1, tz });
+    const hit = day.events.find((x: any) => x.id === id && Number(x.occurrence_start) === occ) as any;
+    if (!hit) fail('occurrence_not_found');
+    from = parseWhen(hit.start, tz);
+    to = hit.end ? parseWhen(hit.end, tz) : from + (Number(e.end_at) - Number(e.start_at));
+    baseTitle = String(hit.title ?? baseTitle);
+    baseLocation = String(hit.location ?? baseLocation);
+  }
+  let start: number;
+  if (args.start !== undefined) start = parseWhen(args.start, tz);
+  else if (args.shift_days !== undefined) start = from + Number(args.shift_days) * DAY;
+  else fail('start_or_shift_days_required');
+  const duration = Math.max(1, to - from);
+  const targetCal = String(args.to_calendar_id ?? args.calendar_id ?? e.calendar_id);
+  const allDay = Number(e.all_day) === 1;
+  const payload = compact({
+    title: args.title !== undefined ? String(args.title) : baseTitle,
+    all_day: allDay,
+    start_at: start,
+    end_at: allDay ? undefined : start + duration,
+    tz,
+    note: String(e.note ?? ''),
+    location: baseLocation,
+    label_id: e.label_id ?? undefined,
+    reminders: (src.reminders ?? []).map((x: any) => Number(x.minutes)),
+    rrule: args.keep_recurrence === true ? (e.rrule ?? undefined) : undefined,
+    virtual_attendees: targetCal === String(e.calendar_id)
+      ? (src.virtual_attendees ?? []).map((x: any) => String(x.id)) : undefined,
+  });
+  const r = await c.call<{ id: string }>('POST', `/api/calendars/${encodeURIComponent(targetCal)}/events`, { body: payload });
+  return {
+    copied: r.id, from_event: id, title: payload.title, calendar_id: targetCal,
+    start: localLabel(start, tz, allDay),
+    recurrence_copied: !!payload.rrule,
+  };
+}
+
+// ---------- virtual members ----------
+
+export async function listVirtualMembers(c: Client, args: Args = {}) {
+  const cal = resolveCal(c, args);
+  return c.call('GET', `/api/calendars/${encodeURIComponent(cal)}/virtual-members`);
+}
+
+export async function createVirtualMember(c: Client, args: Args) {
+  const cal = resolveCal(c, args);
+  const name = String(args.name ?? '').trim();
+  if (!name) fail('name_required');
+  return c.call('POST', `/api/calendars/${encodeURIComponent(cal)}/virtual-members`, {
+    body: compact({
+      name, account_type: args.account_type, color: args.color,
+      birthday: args.birthday, shows_birthday: args.shows_birthday,
+    }),
+  });
+}
+
+export async function updateVirtualMember(c: Client, args: Args) {
+  const id = String(args.virtual_id ?? args.id ?? fail('virtual_id_required'));
+  const body = compact({
+    name: args.name, account_type: args.account_type, color: args.color,
+    birthday: args.birthday,
+    shows_birthday: args.shows_birthday === undefined ? undefined : args.shows_birthday === true,
+  });
+  return c.call('PUT', `/api/virtual-members/${encodeURIComponent(id)}`, { body });
+}
+
+export async function deleteVirtualMember(c: Client, args: Args) {
+  const id = String(args.virtual_id ?? args.id ?? fail('virtual_id_required'));
+  return c.call('DELETE', `/api/virtual-members/${encodeURIComponent(id)}`);
+}
+
+// ---------- memos ----------
+
+export async function listMemos(c: Client, args: Args = {}) {
+  const cal = resolveCal(c, args);
+  return c.call('GET', `/api/calendars/${encodeURIComponent(cal)}/memos`);
+}
+
+export async function createMemo(c: Client, args: Args) {
+  const cal = resolveCal(c, args);
+  const title = String(args.title ?? '').trim();
+  const body = String(args.body ?? '');
+  if (!title && !body) fail('memo_empty');
+  return c.call('POST', `/api/calendars/${encodeURIComponent(cal)}/memos`, {
+    body: compact({ title, body, pinned: args.pinned === true ? true : undefined }),
+  });
+}
+
+export async function updateMemo(c: Client, args: Args) {
+  const id = String(args.memo_id ?? args.id ?? fail('memo_id_required'));
+  const body = compact({
+    title: args.title, body: args.body === undefined ? undefined : String(args.body),
+    pinned: args.pinned === undefined ? undefined : args.pinned === true,
+  });
+  return c.call('PUT', `/api/memos/${encodeURIComponent(id)}`, { body });
+}
+
+export async function deleteMemo(c: Client, args: Args) {
+  const id = String(args.memo_id ?? args.id ?? fail('memo_id_required'));
+  return c.call('DELETE', `/api/memos/${encodeURIComponent(id)}`);
+}
+
+
