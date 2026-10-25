@@ -132,8 +132,8 @@ ok('+8 late-night Thursday series stays on Thursday locally',
   trows.length === 5 && trows.every((r: any) => localWeekday(r.start_at) === 'Thu'),
   `got ${trows.length} rows: ${trows.map((r: any) => localWeekday(r.start_at)).join(',')}`);
 ok('+8 local date keys are the expected Thursdays',
-  trows.map((r: any) => new Date(r.start_at).toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' })).join(','),
-  '2026-12-03,2026-12-10,2026-12-17,2026-12-24,2026-12-31');
+  trows.map((r: any) => new Date(r.start_at).toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' })).join(',')
+    === '2026-12-03,2026-12-10,2026-12-17,2026-12-24,2026-12-31');
 
 // ---- comments & reactions ----
 const cm = await req('POST', `/api/events/${one.data.id}/comments`, { body: '記得帶譜' }, cb);
@@ -179,10 +179,20 @@ ok('ics has VCALENDAR', body.startsWith('BEGIN:VCALENDAR') && body.trimEnd().end
 const countLines = (needle: string) => body.split('\r\n').filter((l) => l.startsWith(needle)).length;
 ok('recurring series is ONE vevent, not one per occurrence', countLines('SUMMARY:每四游泳') === 1, `got ${countLines('SUMMARY:每四游泳')}`);
 ok('series carries a single RRULE line', countLines('RRULE:FREQ=WEEKLY;BYDAY=TH') === 1, `got ${countLines('RRULE:FREQ=WEEKLY;BYDAY=TH')}`);
-ok('series carries EXDATE for the skipped day', /EXDATE:20261210T140000Z/.test(body));
-ok('override becomes a RECURRENCE-ID vevent', /RECURRENCE-ID:/.test(body) && body.includes('SUMMARY:游泳課(改期)'));
+ok('series carries EXDATE for the skipped day', /EXDATE(;TZID=[^:]+):20261210T/.test(body),
+  body.split('\r\n').find((l) => l.startsWith('EXDATE')) ?? 'no EXDATE');
+ok('override becomes a RECURRENCE-ID vevent', /RECURRENCE-ID[;:]/.test(body) && body.includes('SUMMARY:游泳課(改期)'),
+  body.split('\r\n').filter((l) => l.includes('RECURRENCE-ID') || l.includes('游泳課')).join(' | '));
 ok('ics folds every line <=75 octets', body.split('\r\n').every((l) => Buffer.byteLength(l, 'utf8') <= 75));
 ok('ics all-day uses VALUE=DATE', /DTSTART;VALUE=DATE:20261224/.test(body));
+// DTEND is exclusive: an all-day event on one date must not span two days on the phone.
+ok('ics all-day DTEND is the next day only', /DTEND;VALUE=DATE:20261225/.test(body) && !/DTEND;VALUE=DATE:20261226/.test(body));
+// Without TZID + VTIMEZONE a client expands the RRULE in UTC and moves a late-night
+// Asia/Taipei series onto the wrong weekday.
+ok('ics declares the event timezone', /BEGIN:VTIMEZONE/.test(body) && /TZID:Asia\/Taipei/.test(body));
+ok('ics timed event keeps its local wall time',
+  /DTSTART;TZID=Asia\/Taipei:20261203T220000/.test(body) && /RRULE:FREQ=WEEKLY;BYDAY=TH/.test(body),
+  body.split('\r\n').filter((l) => l.startsWith('DTSTART;TZID')).join(' | '));
 ok('ics cannot be forged by a CRLF title', !body.split('\r\n').some((l) => l === 'DESCRIPTION:INJECTED' || l === 'X-FAKE:1'));
 ok('crlf title survives as escaped text', body.split('\r\n').some((l) => l.includes('SUMMARY:正常標題\\r\\nDESCRIPTION:INJECTED')));
 
@@ -194,7 +204,7 @@ ok('crlf title survives as escaped text', body.split('\r\n').some((l) => l.inclu
   ok('ics vevent blocks balance', opens === closes && opens > 0, `${opens}/${closes}`);
   ok('ics has no doubled timezone suffix', !lines.some((l) => /T\d{6}ZZ/.test(l)),
     lines.find((l) => /T\d{6}ZZ/.test(l)) ?? '');
-  const timeRe = /^(DTSTART|DTEND|DTSTAMP|RECURRENCE-ID)(;VALUE=DATE)?:\d{8}(T\d{6}Z)?$/;
+  const timeRe = /^(DTSTART|DTEND|DTSTAMP|RECURRENCE-ID)(;VALUE=DATE|;TZID=[A-Za-z0-9_+\/-]+)?:\d{8}(T\d{6}Z?)?$/;
   const timeLines = lines.filter((l) => /^(DTSTART|DTEND|DTSTAMP|RECURRENCE-ID)[;:]/.test(l));
   ok('every ics time value is well formed', timeLines.length > 3 && timeLines.every((l) => timeRe.test(l)),
     timeLines.find((l) => !timeRe.test(l)) ?? '');
@@ -286,6 +296,22 @@ ok('cross-origin mutation blocked', (await req('POST', `/api/calendars/${cid}/ev
 // ---- static ui ----
 const idx = await fetch(`${base}/`);
 ok('web ui served', idx.status === 200 && (await idx.text()).includes('<html'));
+const idxCache = idx.headers.get('cache-control') ?? '';
+ok('static ui is revalidated, not cached stale', /no-cache/.test(idxCache), idxCache);
+
+// ---- a malformed URL must not take the process down ----
+const junk = await fetch(`${base}/api/events/%zz`);
+ok('malformed percent-escape answered instead of crashing', junk.status === 404 || junk.status === 400, `got ${junk.status}`);
+ok('server still serves after the malformed request', (await fetch(`${base}/api/me`)).status === 401);
+
+// ---- logout really ends the session ----
+const out1 = await req('POST', '/api/signup', { email: 'bye@example.com', name: 'B', password: 'password1' });
+const outCookie = out1.cookie!;
+ok('new account can read /api/me', (await req('GET', '/api/me', undefined, outCookie)).status === 200);
+const outRes = await fetch(`${base}/api/logout`, { method: 'POST', headers: { cookie: outCookie } });
+const setCookie = outRes.headers.get('set-cookie') ?? '';
+ok('logout expires the session cookie', /sid=;/.test(setCookie), setCookie);
+ok('the same cookie is rejected afterwards', (await req('GET', '/api/me', undefined, outCookie)).status === 401);
 
 server.close();
 store.db.close();

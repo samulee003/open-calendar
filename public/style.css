@@ -32,7 +32,16 @@ hr{border:0;border-top:1px solid var(--line);margin:14px 0}
 .topbar h2{margin:0;font-size:17px;min-width:130px}
 .spacer{flex:1}
 .body{display:grid;grid-template-columns:190px 1fr 330px;gap:14px;padding:14px;align-items:start}
-@media (max-width:1000px){.body{grid-template-columns:1fr}.side{display:none}}
+@media (max-width:1000px){
+  .body{grid-template-columns:1fr}
+  /* Hiding the sidebar would leave no way to switch calendars or filter labels on a
+     phone, so it becomes a scrollable pill strip above the grid instead. */
+  .side{display:flex;align-items:center;gap:10px;overflow-x:auto;padding:8px 10px}
+  .side h3{display:none}
+  .cal-list,.label-list{flex-direction:row;flex:0 0 auto;margin:0;gap:6px}
+  .cal-list li,.label-list li{white-space:nowrap;border:1px solid var(--line);border-radius:999px;padding:5px 11px}
+  .cal-list li span[style]{display:none}
+}
 
 .side{background:var(--card);border:1px solid var(--line);border-radius:var(--rad);padding:12px}
 .side h3{margin:6px 0 8px;font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px}

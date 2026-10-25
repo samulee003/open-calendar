@@ -104,7 +104,7 @@ function eventArgs(pos: string[], flags: Record<string, string | boolean>): T.Ar
     start: flags.start, end: flags.end, date: flags.date,
     all_day: flags['all-day'] === true ? true : undefined,
     tz: flags.tz, calendar_id: flags.calendar,
-    occurrence_start: flags.occ, scope: flags.scope, gone: flags.gone === true ? true : undefined,
+    occurrence_start: flags.occ ?? flags.occurrence, scope: flags.scope, gone: flags.gone === true ? true : undefined,
     shift_days: flagNum(flags, 'shift-days'), to_calendar_id: flags['to-calendar'],
     keep_recurrence: boolFlag(flags['keep-recurrence']),
     request_id: flags['request-id'],

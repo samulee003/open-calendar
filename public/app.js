@@ -409,6 +409,11 @@ async function editPrefill(r) {
   try {
     const detail = await api(`/api/events/${r.id}`);
     for (const vm of detail.virtual_attendees ?? []) state.selectedVms.add(vm.id);
+    // PUT always sends label and reminder, so an unprefilled edit would silently
+    // clear them.
+    f.elements.label_id.value = detail.event.label_id != null ? String(detail.event.label_id) : '';
+    const rem = (detail.reminders ?? [])[0];
+    f.elements.reminder.value = rem != null ? String(rem.minutes ?? rem) : '';
   } catch { /* keep the selection empty */ }
   renderVmPicker();
   $('#dlg-add').showModal();
@@ -497,6 +502,9 @@ function fillSelects() {
       for (const l of state.labels) node.append(el('option', { value: String(l.id), text: l.name }));
     } else {
       for (const c of state.calendars) node.append(el('option', { value: c.id, text: c.name }));
+      // Default every calendar picker to the calendar actually on screen; leaving it
+      // on the first option silently sent new members and imports to the wrong place.
+      if (state.calendars.some((c) => c.id === state.activeCal)) node.value = state.activeCal;
     }
   }
 }

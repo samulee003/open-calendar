@@ -127,5 +127,21 @@ check('monthly last MO',
     .map(iso),
   ['2026-01-26', '2026-02-23', '2026-03-30', '2026-04-27']);
 
+// 15. a series anchored years ago must still answer for a far-future window
+check('daily series anchored 2013 answers for Nov 2026',
+  expand('RRULE:FREQ=DAILY', D('2013-01-01T00:00:00Z'), 3600000, D('2026-11-01'), D('2026-11-30')).length, 30);
+
+// 16. COUNT counts from the anchor, so an old bounded series stays bounded
+check('COUNT from an old anchor lists its four Mondays',
+  expand('RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=4', D('2013-01-07T00:00:00Z'), 3600000, D('2013-01-01'), D('2013-03-31')).map(iso),
+  ['2013-01-07', '2013-01-14', '2013-01-21', '2013-01-28']);
+check('that COUNT series is empty five years later',
+  expand('RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=4', D('2013-01-07T00:00:00Z'), 3600000, D('2018-01-01'), D('2018-12-31')).length, 0);
+
+// 17. an ordinal prefix on WEEKLY is the weekday, not a silent empty series
+check('weekly BYDAY=2MO still matches Mondays',
+  expand('RRULE:FREQ=WEEKLY;BYDAY=2MO', D('2026-01-05T00:00:00Z'), 3600000, D('2026-01-01'), D('2026-01-31')).map(iso),
+  ['2026-01-05', '2026-01-12', '2026-01-19', '2026-01-26']);
+
 console.log(fails ? `\n${fails} FAILED` : '\nall passed');
 process.exitCode = fails ? 1 : 0;

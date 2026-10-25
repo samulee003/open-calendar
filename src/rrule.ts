@@ -1,10 +1,9 @@
 // RFC 5545 recurrence subset: FREQ=DAILY|WEEKLY|MONTHLY|YEARLY, INTERVAL,
 // BYDAY, BYMONTHDAY (incl. -1 = last day), BYMONTH, COUNT, UNTIL.
 //
-// Expansion works on UTC wall-clock components of the anchor instant. All-day
-// events are exact. Timed events in a zone with DST will drift by one hour
-// across a transition; zones without DST (Asia/Taipei, Asia/Shanghai, UTC) are
-// unaffected. See README "Known limits".
+// Each occurrence is re-projected through the event's own IANA zone (wallToUtc),
+// so a series stays on its wall-clock weekday across a DST transition. Unsupported
+// properties (BYSETPOS, WKST, TZID-form UNTIL) are documented in README "已知限制".
 
 import { wallParts, wallToUtc } from './tz.ts';
 
@@ -59,6 +58,11 @@ function lastDayOfMonth(y: number, m0: number): number {
   return new Date(Date.UTC(y, m0 + 1, 0)).getUTCDate();
 }
 
+/** "2MO" / "-1FR" → "MO" / "FR"; the prefix only selects a week of the month. */
+function weekdayOf(spec: string): string {
+  return spec.replace(/^-?\d+/, '');
+}
+
 function matches(day: Date, rule: Rule, anchor: Date): boolean {
   const y = day.getUTCFullYear(), m0 = day.getUTCMonth(), d = day.getUTCDate();
   const monthsFromAnchor = (y - anchor.getUTCFullYear()) * 12 + (m0 - anchor.getUTCMonth());
@@ -70,12 +74,13 @@ function matches(day: Date, rule: Rule, anchor: Date): boolean {
       const days = Math.round((Date.UTC(y, m0, d) - Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), anchor.getUTCDate())) / DAY_MS);
       if (days % rule.interval !== 0) return false;
     }
-    if (rule.byday.length && !rule.byday.includes(WEEKDAYS[day.getUTCDay()])) return false;
+    // An ordinal prefix (2MO) is only meaningful for MONTHLY/YEARLY; treat it as the weekday here.
+    if (rule.byday.length && !rule.byday.map(weekdayOf).includes(WEEKDAYS[day.getUTCDay()])) return false;
     return true;
   }
 
   if (rule.freq === 'WEEKLY') {
-    if (rule.byday.length && !rule.byday.includes(WEEKDAYS[day.getUTCDay()])) return false;
+    if (rule.byday.length && !rule.byday.map(weekdayOf).includes(WEEKDAYS[day.getUTCDay()])) return false;
     if (rule.interval > 1) {
       const anchorWeek = Math.floor(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), anchor.getUTCDate()) / DAY_MS);
       const weekStart = anchorWeek - ((anchor.getUTCDay() + 6) % 7);
@@ -140,10 +145,23 @@ export function expand(
   const out: number[] = [];
   let seq = 0;
   let scanned = 0;
-  let cursor = anchor.getTime();
 
-  while (out.length < MAX_OCCURRENCES && scanned < MAX_SCAN_DAYS) {
+  // A series anchored years ago must still answer for a window far in the future.
+  // Without COUNT the scan can start just before the requested window; with COUNT
+  // the occurrences before it still have to be counted, so the scan starts at the
+  // anchor but is bounded by the count instead of a fixed 4000 days.
+  const cycleDays = { DAILY: 1, WEEKLY: 7, MONTHLY: 31, YEARLY: 366 }[rule.freq] * rule.interval;
+  const windowStart = Math.floor(rangeStart / DAY_MS) * DAY_MS;
+  let cursor = rule.count === null
+    ? Math.max(anchor.getTime(), windowStart - cycleDays * DAY_MS)
+    : anchor.getTime();
+  const scanLimit = rule.count === null
+    ? MAX_SCAN_DAYS
+    : Math.max(MAX_SCAN_DAYS, (rule.count + 2) * cycleDays + 400);
+
+  while (out.length < MAX_OCCURRENCES && scanned < scanLimit) {
     const day = new Date(cursor);
+    if (rule.count === null && cursor > rangeEnd + DAY_MS) break;
     if (matches(day, rule, anchor)) {
       if (rule.count !== null && ++seq > rule.count) break;
       const key = `${String(day.getUTCFullYear()).padStart(4, '0')}-${String(day.getUTCMonth() + 1).padStart(2, '0')}-${String(day.getUTCDate()).padStart(2, '0')}`;

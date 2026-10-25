@@ -19,6 +19,7 @@ export type Ctx = {
   body: any;
   ip: string;
   headers: Record<string, string | string[] | undefined>;
+  sid: string | undefined;
 };
 
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
@@ -305,8 +306,11 @@ export const routes = {
   },
 
   'POST /api/logout': (ctx: Ctx) => {
-    if (ctx.user) ctx.store.run('delete from sessions where token = ?', ctx.query.get('t') ?? '');
-    return { ok: true };
+    // The browser's own session id, not a query parameter no caller ever sent.
+    if (ctx.user && ctx.sid) {
+      ctx.store.run('delete from sessions where token = ? and user_id = ?', ctx.sid, String(ctx.user.id));
+    }
+    return { ok: true, logout: true };
   },
 
   'GET /api/me': (ctx: Ctx) => {
@@ -795,9 +799,13 @@ export const routes = {
 
   'GET /api/calendars/:id/subscriptions': (ctx: Ctx) => {
     mustView(ctx, ctx.params.id);
-    return ctx.store.all(
+    const rows = ctx.store.all(
       `select token, created_at, expires_at, revoked_at, last_used_at from subscriptions
-       where calendar_id = ? order by created_at desc`, ctx.params.id);
+       where calendar_id = ? order by created_at desc`, ctx.params.id) as Row[];
+    // A browser session needs the full token to copy the subscription URL; an agent
+    // token only needs to recognise and revoke it, so it gets a prefix.
+    if (ctx.via === 'cookie') return rows;
+    return rows.map((r) => ({ ...r, token: `${String(r.token).slice(0, 6)}…` }));
   },
 
   'DELETE /api/subscriptions/:token': (ctx: Ctx) => {

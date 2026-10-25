@@ -36,6 +36,11 @@ function compile(path: string): [RegExp, string[]] {
   return [new RegExp(`^${pattern.replace(/\./g, '\\.')}$`), names];
 }
 
+// A malformed percent-escape in a URL must 400, not take the process down.
+function decodeParam(raw: string): string {
+  try { return decodeURIComponent(raw); } catch { return raw; }
+}
+
 const COMPILED = HANDLERS.map(([key, fn]) => {
   const sp = key.indexOf(' ');
   return { method: key.slice(0, sp), regex: compile(key.slice(sp + 1)), fn };
@@ -61,24 +66,50 @@ function readBody(req: import('node:http').IncomingMessage): Promise<any> {
 
 class HttpAbort extends Error {}
 
+// Behind a TLS-terminating proxy the browser sends an https Origin while Host still
+// reads as the upstream name; matching a hardcoded http:// would 403 every mutation.
+// The forwarded protocol is only trusted when the operator opted in with TRUST_PROXY.
+function sameOrigin(req: import('node:http').IncomingMessage): boolean {
+  const origin = req.headers.origin;
+  if (typeof origin !== 'string') return true;
+  const host = req.headers.host;
+  if (!host) return false;
+  const proto = process.env.TRUST_PROXY === '1'
+    ? String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim() || 'http'
+    : 'http';
+  return origin === `${proto}://${host}`;
+}
+
 export function makeServer(store: Store) {
-  return createServer(async (req, res) => {
-    const url = new URL(req.url ?? '/', 'http://localhost');
-    const method = req.method ?? 'GET';
-    const send = (status: number, payload: unknown, headers: Record<string, string> = {}) => {
-      const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
-      res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...SECURITY_HEADERS, ...headers });
-      res.end(body);
-    };
+  return createServer((req, res) => {
+    // Every failure inside the async handler must still produce a response; an
+    // unhandled rejection here would take the whole process down.
+    handle(store, req, res).catch((e) => {
+      console.error('UNHANDLED', req.method, req.url, e);
+      if (!res.headersSent) {
+        res.writeHead(500, { 'content-type': 'application/json; charset=utf-8', ...SECURITY_HEADERS });
+        res.end(JSON.stringify({ error: 'internal' }));
+      } else {
+        res.destroy();
+      }
+    });
+  });
+}
+
+async function handle(store: Store, req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) {
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  const method = req.method ?? 'GET';
+  const send = (status: number, payload: unknown, headers: Record<string, string> = {}) => {
+    const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
+    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...SECURITY_HEADERS, ...headers });
+    res.end(body);
+  };
 
     // Same-origin check for state-changing requests; the session cookie is Lax so
     // a cross-site form post would not even carry it, but we fail explicitly too.
-    if (method !== 'GET' && method !== 'HEAD') {
-      const origin = req.headers.origin;
-      if (typeof origin === 'string' && origin !== `http://${req.headers.host}`) {
-        send(403, { error: 'cross_origin' });
-        return;
-      }
+    if (method !== 'GET' && method !== 'HEAD' && !sameOrigin(req)) {
+      send(403, { error: 'cross_origin' });
+      return;
     }
 
     const cookies = parseCookies(req.headers.cookie);
@@ -112,7 +143,11 @@ export function makeServer(store: Store) {
       const rel = url.pathname === '/' ? 'index.html' : normalize(url.pathname).replace(/^(\.\.[/\\])+/, '').slice(1);
       try {
         const file = await readFile(join(PUBLIC, rel));
-        res.writeHead(200, { 'content-type': MIME[extname(rel)] ?? 'application/octet-stream', ...SECURITY_HEADERS });
+        // no-cache so an upgrade cannot leave the browser running yesterday's app.js.
+        res.writeHead(200, {
+          'content-type': MIME[extname(rel)] ?? 'application/octet-stream',
+          'cache-control': 'no-cache', ...SECURITY_HEADERS,
+        });
         res.end(file);
       } catch {
         res.writeHead(404); res.end('not found');
@@ -125,7 +160,7 @@ export function makeServer(store: Store) {
       const m = route.regex[0].exec(url.pathname);
       if (!m) continue;
       const params: Record<string, string> = {};
-      route.regex[1].forEach((name, i) => { params[name] = decodeURIComponent(m[i + 1]); });
+      route.regex[1].forEach((name, i) => { params[name] = decodeParam(m[i + 1]); });
 
       let body: any;
       try { body = method === 'GET' ? undefined : await readBody(req); }
@@ -133,11 +168,14 @@ export function makeServer(store: Store) {
       if (body !== undefined && typeof body !== 'object') { send(400, { error: 'json_object_required' }); return; }
 
       try {
-        const result = await (route.fn as any)({ store, user, via, params, query: url.searchParams, body, ip, headers: req.headers });
+        const ctx = { store, user, via, params, query: url.searchParams, body, ip, headers: req.headers, sid: cookies.sid };
+        const result = await (route.fn as any)(ctx);
         const headers: Record<string, string> = {};
         // Only an explicit `session` field sets the cookie. Inferring it from any
         // field named `token` once clobbered the session with an ICS token.
         if (result?.session) headers['set-cookie'] = sessionCookie(result.session);
+        // Logout drops the session row in the route; this expires the browser's copy.
+        if (result?.logout) headers['set-cookie'] = clearCookie();
         if (result?.raw) {
           res.writeHead(200, { 'content-type': result.contentType ?? 'text/plain; charset=utf-8', 'cache-control': 'public, max-age=60', ...SECURITY_HEADERS });
           res.end(result.raw);
@@ -152,7 +190,6 @@ export function makeServer(store: Store) {
       return;
     }
     send(404, { error: 'no_route' });
-  });
 }
 
 const PORT = Number(process.env.PORT ?? 8787);

@@ -198,6 +198,20 @@ ok('copied occurrence lands at the new time', occCopyList.events.some((e: any) =
 const seriesCopy = await T.copyEvent(c, { event_id: weekly.created, shift_days: 0, keep_recurrence: true }) as any;
 ok('copy_event keep_recurrence', (await T.getEvent(c, { event_id: seriesCopy.copied })).event.rrule === 'RRULE:FREQ=WEEKLY;BYDAY=TH');
 
+// ---- time-argument hardening ----
+ok('10-digit epoch seconds are not read as milliseconds', T.parseWhen(1767225600, 'UTC') === 1767225600000);
+ok('13-digit epoch milliseconds pass through', T.parseWhen(1900000000000, 'UTC') === 1900000000000);
+let labelErr = '';
+try { T.parseWhen('2026-01-05 (all-day)', 'Asia/Taipei'); } catch (e) { labelErr = String((e as Error).message); }
+ok('an all-day label is refused with a pointer to the epoch', /pass the epoch/.test(labelErr), labelErr);
+const allDay = await T.createEvent(c, { title: '全天複刻', date: '2026-11-25', all_day: true }) as any;
+const allDayCopy = await T.copyEvent(c, { event_id: allDay.created, shift_days: 7 }) as any;
+ok('copying an all-day event lands on the right single day', allDayCopy.start === '2026-12-02 (all-day)', JSON.stringify(allDayCopy));
+let ovErr = '';
+try { await T.overrideOccurrence(c, { event_id: weekly.created, occurrence_start: '2026-11-14 09:00' }); }
+catch (e) { ovErr = String((e as Error).message); }
+ok('override refuses an occurrence that does not exist', /occurrence_not_found/.test(ovErr), ovErr);
+
 // ---- idempotency ----
 const idem1 = await T.createEvent(c, { title: '冪等測試', start: '2026-11-23 10:00', end: '2026-11-23 11:00', request_id: 'agent-retry-1' }) as any;
 const idem2 = await T.createEvent(c, { title: '冪等測試', start: '2026-11-23 10:00', end: '2026-11-23 11:00', request_id: 'agent-retry-1' }) as any;
@@ -329,7 +343,7 @@ const expected = ['list_calendars', 'list_events', 'get_event', 'create_event', 
   'update_event', 'delete_event', 'override_occurrence', 'find_free_slots', 'add_comment', 'list_labels',
   'create_subscription', 'copy_event', 'list_virtual_members', 'create_virtual_member', 'update_virtual_member',
   'delete_virtual_member', 'list_memos', 'create_memo', 'update_memo', 'delete_memo', 'get_date_info',
-  'list_trash', 'restore_event', 'restore_occurrence'];
+  'list_trash', 'restore_event', 'restore_occurrence', 'list_subscriptions', 'revoke_subscription', 'whoami'];
 fatal('mcp advertises every tool', names.length === expected.length && expected.every((n) => names.includes(n)), JSON.stringify(names));
 ok('mcp schemas are objects with descriptions', tools.result.tools.every((t: any) => t.inputSchema?.type === 'object' && typeof t.description === 'string'));
 
@@ -354,6 +368,10 @@ ok('mcp get_date_info', dateOut.holiday?.name === '農曆正月初一', JSON.str
 
 const trashCall = await rpc('tools/call', { name: 'list_trash', arguments: { days: 30 } });
 ok('mcp list_trash', Array.isArray(JSON.parse(trashCall.result.content[0].text)));
+
+const whoCall = await rpc('tools/call', { name: 'whoami', arguments: {} });
+ok('mcp whoami identifies the account', JSON.parse(whoCall.result.content[0].text).email === 'mom@example.com',
+  JSON.stringify(whoCall).slice(0, 200));
 
 const errCall = await rpc('tools/call', { name: 'get_event', arguments: { event_id: 'evt_nope' } });
 ok('mcp tool error is isError not protocol error', errCall.result?.isError === true && JSON.parse(errCall.result.content[0].text).status === 404, JSON.stringify(errCall).slice(0, 300));

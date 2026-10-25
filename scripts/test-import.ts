@@ -15,8 +15,8 @@ const hm = (ms: number) => {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
 
-ok('csv line splits quotes and commas', splitCsvLine('a,"b,c",d').join('|'), 'a|b,c|d');
-ok('csv line unescapes doubled quotes', splitCsvLine('"he said ""hi"""')[0], 'he said "hi"');
+ok('csv line splits quotes and commas', splitCsvLine('a,"b,c",d').join('|') === 'a|b,c|d');
+ok('csv line unescapes doubled quotes', splitCsvLine('"he said ""hi"""')[0] === 'he said "hi"');
 
 const zh = `日期,標題,開始時間,結束時間,備註
 2026-11-05,大提琴課,14:00,15:00,帶譜

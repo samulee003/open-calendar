@@ -105,6 +105,7 @@ const TOOLS: { name: string; description: string; inputSchema: any; run: (c: Cli
       rrule: s('new RRULE (empty string clears)'), note: s('notes'), location: s('location'),
       label_id: n('label id'), reminders: { type: 'array', items: { type: 'number' }, description: 'replace reminders' },
       virtual_attendees: { type: 'array', items: { type: 'string' }, description: 'replace the tagged virtual members' },
+      tz: s('IANA timezone for interpreting naive start/end values'),
     }, ['event_id']),
     run: (c, a) => T.updateEvent(c, a),
   },
@@ -268,6 +269,24 @@ const TOOLS: { name: string; description: string; inputSchema: any; run: (c: Cli
     description: 'Delete a memo.',
     inputSchema: obj({ memo_id: s('memo id') }, ['memo_id']),
     run: (c, a) => T.deleteMemo(c, a),
+  },
+  {
+    name: 'list_subscriptions',
+    description: 'List a calendar\'s read-only ICS subscription links. Agent tokens see masked prefixes (enough to recognise and revoke one); the full URL is only shown to a browser session.',
+    inputSchema: obj({ calendar_id: s(`calendar; ${CAL_HINT}`) }),
+    run: (c, a) => T.listSubscriptions(c, a),
+  },
+  {
+    name: 'revoke_subscription',
+    description: 'Revoke one ICS subscription link immediately (use it when a shared URL leaked). Needs the full token returned by create_subscription.',
+    inputSchema: obj({ token: s('subscription token from create_subscription') }, ['token']),
+    run: (c, a) => T.revokeSubscription(c, a),
+  },
+  {
+    name: 'whoami',
+    description: 'The authenticated account behind this connection: id, email, name, default timezone. Call it first to confirm which calendar the agent is acting as.',
+    inputSchema: obj({}),
+    run: (c) => T.whoami(c),
   },
   {
     name: 'get_date_info',

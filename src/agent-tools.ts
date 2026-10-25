@@ -23,18 +23,24 @@ function compact<T extends Record<string, any>>(o: T): T {
  * (also with "T", optional seconds). Naive readings are wall-clock in `tz`.
  */
 export function parseWhen(value: unknown, tz: string): number {
-  if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value);
+  if (typeof value === 'number' && Number.isFinite(value)) return normaliseEpoch(value);
   const s = String(value ?? '').trim();
   if (!s) fail('time_required');
-  if (/^\d{10,}$/.test(s)) return Number(s);
+  if (/^\d{9,}$/.test(s)) return normaliseEpoch(Number(s));
   const naive = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/.exec(s);
   if (naive) {
     const [, y, mo, d, hh, mi, ss] = naive;
     return wallToUtc(+y, +mo, +d, +(hh ?? 0), +(mi ?? 0), +(ss ?? 0), tz);
   }
+  if (/\(all-day\)/.test(s)) fail(`bad_time: ${s} — pass the epoch from list_events instead`);
   const t = Date.parse(s);
   if (Number.isFinite(t)) return t;
   return fail(`bad_time: ${s}`);
+}
+
+// A 10-digit value is Unix seconds; reading it as milliseconds lands in 1970.
+function normaliseEpoch(n: number): number {
+  return n < 1e11 ? Math.round(n * 1000) : Math.trunc(n);
 }
 
 export function localLabel(ms: number, tz: string, allDay: boolean): string {
@@ -61,6 +67,10 @@ function shapeOccurrence(o: any, tz: string) {
   return compact({
     id: String(o.id),
     occurrence_start: Number(o.occurrence_start),
+    // Epochs travel alongside the human-readable labels so a caller can hand them
+    // back to another tool without round-tripping a label through the parser.
+    start_at: Number(o.start_at),
+    end_at: Number(o.end_at),
     title: String(o.title),
     all_day: o.all_day ? true : undefined,
     start: localLabel(Number(o.start_at), tz, !!o.all_day),
@@ -249,12 +259,20 @@ export async function restoreOccurrence(c: Client, args: Args) {
     { body: { occurrence_start: parseWhen(args.occurrence_start, tz) } });
 }
 
-export async function overrideOccurrence(c: Client, args: Args) {  const id = String(args.event_id ?? args.id ?? fail('event_id_required'));
+export async function overrideOccurrence(c: Client, args: Args) {
+  const id = String(args.event_id ?? args.id ?? fail('event_id_required'));
   if (args.occurrence_start === undefined) fail('occurrence_start_required');
   const e = await c.call<any>('GET', `/api/events/${encodeURIComponent(id)}`);
   const tz = isValidZone(e.event?.tz) ? String(e.event.tz) : await tzOf(c);
+  const occ = parseWhen(args.occurrence_start, tz);
+  // Overrides are keyed by orig_start: a value matching no real occurrence would be
+  // stored, never shown, and reported as success. Check it exists first.
+  const day = await listEvents(c, { calendar_id: String(e.event.calendar_id), from: occ - DAY, to: occ + DAY, tz });
+  if (!day.events.some((x: any) => x.id === id && Number(x.occurrence_start) === occ)) {
+    fail(`occurrence_not_found: ${localLabel(occ, tz, false)} is not an occurrence of ${id} in this window`);
+  }
   const body = compact({
-    occurrence_start: parseWhen(args.occurrence_start, tz),
+    occurrence_start: occ,
     title: args.title, note: args.note, location: args.location,
     all_day: args.all_day,
     start_at: args.start !== undefined ? parseWhen(args.start, tz) : undefined,
@@ -280,10 +298,10 @@ export async function findFreeSlots(c: Client, args: Args) {
 
   const events = await listEvents(c, { ...args, from: winStart, to: winEnd, tz });
   const busy: [number, number][] = [];
-  for (const ev of events.events) {
-    const raw = ev as any;
-    const s = raw.all_day ? Math.max(winStart, parseWhen(raw.start.slice(0, 10), tz)) : parseWhen(raw.start, tz);
-    const e = raw.all_day ? Math.min(winEnd, s + DAY) : parseWhen(raw.end, tz);
+  for (const ev of events.events as any[]) {
+    const s = Number(ev.start_at);
+    const e = Number(ev.end_at);
+    if (!Number.isFinite(s) || !Number.isFinite(e)) continue;
     busy.push([Math.max(s, winStart), Math.min(e, winEnd)]);
   }
   busy.sort((a, b) => a[0] - b[0]);
@@ -346,8 +364,8 @@ export async function copyEvent(c: Client, args: Args) {
     const day = await listEvents(c, { calendar_id: String(e.calendar_id), from: occ, to: occ + 1, tz });
     const hit = day.events.find((x: any) => x.id === id && Number(x.occurrence_start) === occ) as any;
     if (!hit) fail('occurrence_not_found');
-    from = parseWhen(hit.start, tz);
-    to = hit.end ? parseWhen(hit.end, tz) : from + (Number(e.end_at) - Number(e.start_at));
+    from = Number(hit.start_at);
+    to = Number(hit.end_at);
     baseTitle = String(hit.title ?? baseTitle);
     baseLocation = String(hit.location ?? baseLocation);
   }
