@@ -41,6 +41,7 @@
     <button id="open-cal">日曆／邀請</button>
     <button id="open-sub">手機訂閱</button>
     <button id="open-memo">備忘</button>
+    <button id="open-trash">垃圾桶</button>
     <button id="logout">退出</button>
   </header>
 
@@ -169,6 +170,13 @@
   <button type="button" id="memo-add" class="primary">新增</button>
   <ul id="memo-list" class="sub-list"></ul>
   <div class="actions"><button type="button" id="memo-close">關閉</button></div>
+</dialog>
+
+<dialog id="dlg-trash">
+  <h3>最近刪除</h3>
+  <p class="hint">刪掉的行程會留在這裡（最近 30 天），按「還原」就能救回來。</p>
+  <ul id="trash-list" class="sub-list"></ul>
+  <div class="actions"><button type="button" id="trash-close">關閉</button></div>
 </dialog>
 
 <dialog id="dlg-sub">

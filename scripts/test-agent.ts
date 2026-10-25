@@ -198,6 +198,50 @@ ok('copied occurrence lands at the new time', occCopyList.events.some((e: any) =
 const seriesCopy = await T.copyEvent(c, { event_id: weekly.created, shift_days: 0, keep_recurrence: true }) as any;
 ok('copy_event keep_recurrence', (await T.getEvent(c, { event_id: seriesCopy.copied })).event.rrule === 'RRULE:FREQ=WEEKLY;BYDAY=TH');
 
+// ---- idempotency ----
+const idem1 = await T.createEvent(c, { title: '冪等測試', start: '2026-11-23 10:00', end: '2026-11-23 11:00', request_id: 'agent-retry-1' }) as any;
+const idem2 = await T.createEvent(c, { title: '冪等測試', start: '2026-11-23 10:00', end: '2026-11-23 11:00', request_id: 'agent-retry-1' }) as any;
+ok('same request_id returns the original event', idem1.created === idem2.created, JSON.stringify([idem1, idem2]));
+const idemDay = await T.listEvents(c, { from: '2026-11-23', days: 1 });
+ok('retry did not duplicate the event', idemDay.events.filter((e: any) => e.title === '冪等測試').length === 1);
+const idemConflict = await fetch(base + `/api/calendars/${calId}/events`, {
+  method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+  body: JSON.stringify({ title: '不同內容', start_at: 1900000000000, request_id: 'agent-retry-1' }),
+});
+ok('same request_id with a different body is a 409', idemConflict.status === 409);
+
+// ---- trash + restore ----
+await T.deleteEvent(c, { event_id: idem1.created });
+const trash = await T.listTrash(c, { days: 365 }) as any[];
+ok('trash lists the deleted event', trash.some((x) => x.id === idem1.created), JSON.stringify(trash.map((x) => x.id)));
+const restored = await T.restoreEvent(c, { event_id: idem1.created }) as any;
+ok('restore_event brings it back', restored.restored === true);
+const back = await T.listEvents(c, { from: '2026-11-23', days: 1 });
+ok('restored event is visible again', back.events.some((e: any) => e.id === idem1.created));
+ok('restoring a visible event is a no-op', (await T.restoreEvent(c, { event_id: idem1.created }) as any).already_visible === true);
+
+const occRestore = await T.restoreOccurrence(c, { event_id: weekly.created, occurrence_start: thu3.occurrence_start }) as any;
+ok('restore_occurrence undoes a single deletion', occRestore.restored === true && occRestore.day === '2026-11-19', JSON.stringify(occRestore));
+const occBack = await T.listEvents(c, { from: '2026-11-19', days: 1 });
+ok('restored occurrence is visible again', occBack.events.some((e: any) => e.id === weekly.created && e.start.startsWith('2026-11-19')));
+
+// ---- token scopes ----
+const roTok = (await req('POST', '/api/agent-tokens', { name: 'read-only', scopes: ['read'] }, ca)).data.token;
+const ro = new Client({ base, token: roTok, calendar: calId, tz: 'Asia/Taipei' });
+ok('read token can list events', (await T.listEvents(ro, { from: '2026-11-01', days: 1 })).count >= 0);
+let roErr: any;
+try { await T.createEvent(ro, { title: '不該建立', start: '2026-11-24 10:00' }); } catch (e) { roErr = e; }
+ok('read token cannot create', roErr instanceof ApiError && roErr.status === 403 && roErr.message === 'insufficient_scope', String(roErr));
+
+const rwTok = (await req('POST', '/api/agent-tokens', { name: 'writer', scopes: ['read', 'write'] }, ca)).data.token;
+const rw = new Client({ base, token: rwTok, calendar: calId, tz: 'Asia/Taipei' });
+let rwErr: any;
+try { await T.deleteEvent(rw, { event_id: withKid.created }); } catch (e) { rwErr = e; }
+ok('read+write token cannot delete', rwErr instanceof ApiError && rwErr.status === 403, String(rwErr));
+ok('scopes are listed', ((await req('GET', '/api/agent-tokens', undefined, ca)).data as any[])
+  .some((t) => t.name === 'read-only' && t.scopes === 'read'));
+ok('unknown scope is rejected', (await req('POST', '/api/agent-tokens', { name: 'bad', scopes: ['root'] }, ca)).status === 400);
+
 // ---- revocation actually revokes ----
 const rev = await req('POST', '/api/agent-tokens/revoke', { token }, ca);
 ok('revoke token', rev.status === 200 && rev.data.revoked === true);
@@ -284,7 +328,8 @@ const names = (tools.result?.tools ?? []).map((t: any) => t.name);
 const expected = ['list_calendars', 'list_events', 'get_event', 'create_event', 'create_events', 'quick_add',
   'update_event', 'delete_event', 'override_occurrence', 'find_free_slots', 'add_comment', 'list_labels',
   'create_subscription', 'copy_event', 'list_virtual_members', 'create_virtual_member', 'update_virtual_member',
-  'delete_virtual_member', 'list_memos', 'create_memo', 'update_memo', 'delete_memo', 'get_date_info'];
+  'delete_virtual_member', 'list_memos', 'create_memo', 'update_memo', 'delete_memo', 'get_date_info',
+  'list_trash', 'restore_event', 'restore_occurrence'];
 fatal('mcp advertises every tool', names.length === expected.length && expected.every((n) => names.includes(n)), JSON.stringify(names));
 ok('mcp schemas are objects with descriptions', tools.result.tools.every((t: any) => t.inputSchema?.type === 'object' && typeof t.description === 'string'));
 
@@ -306,6 +351,9 @@ ok('mcp list_virtual_members', Array.isArray(JSON.parse(vmsCall.result.content[0
 const dateCall = await rpc('tools/call', { name: 'get_date_info', arguments: { date: '2027-02-06' } });
 const dateOut = JSON.parse(dateCall.result.content[0].text);
 ok('mcp get_date_info', dateOut.holiday?.name === '農曆正月初一', JSON.stringify(dateOut));
+
+const trashCall = await rpc('tools/call', { name: 'list_trash', arguments: { days: 30 } });
+ok('mcp list_trash', Array.isArray(JSON.parse(trashCall.result.content[0].text)));
 
 const errCall = await rpc('tools/call', { name: 'get_event', arguments: { event_id: 'evt_nope' } });
 ok('mcp tool error is isError not protocol error', errCall.result?.isError === true && JSON.parse(errCall.result.content[0].text).status === 404, JSON.stringify(errCall).slice(0, 300));

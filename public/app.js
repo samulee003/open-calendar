@@ -666,6 +666,39 @@ $('#memo-add').addEventListener('click', async () => {
   } catch (err) { alert(`新增失敗：${err.message}`); }
 });
 
+// ---------- trash ----------
+async function loadTrash() {
+  const list = $('#trash-list');
+  if (!list) return;
+  list.textContent = '';
+  let rows = [];
+  try { rows = await api('/api/trash?days=30'); } catch { rows = []; }
+  if (!rows.length) {
+    list.append(el('li', { class: 'hint', text: '垃圾桶是空的' }));
+    return;
+  }
+  for (const r of rows) {
+    const when = r.all_day
+      ? new Date(r.start_at).toISOString().slice(0, 10)
+      : new Date(r.start_at).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    list.append(el('li', {},
+      el('span', { text: `${r.title}（${when}）` }),
+      el('button', {
+        text: '還原',
+        onclick: async () => {
+          try {
+            await api(`/api/events/${r.id}/restore`, { method: 'POST' });
+            await renderMonth();
+            loadTrash();
+          } catch (err) { alert(`還原失敗：${err.message}`); }
+        },
+      })));
+  }
+}
+
+$('#open-trash').addEventListener('click', () => { $('#dlg-trash').showModal(); loadTrash(); });
+$('#trash-close').addEventListener('click', () => $('#dlg-trash').close());
+
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => { /* shell cache is optional */ });
 }

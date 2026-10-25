@@ -150,6 +150,7 @@ function eventPayload(c: Client, args: Args, tz: string) {
     label_id: args.label_id ?? undefined,
     reminders: args.reminders ?? undefined,
     virtual_attendees: args.virtual_attendees ?? undefined,
+    request_id: args.request_id ?? undefined,
   };
   return compact(payload);
 }
@@ -177,6 +178,7 @@ export async function createEvents(c: Client, args: Args) {
     events: list.map((raw: Args) => {
       try { return eventPayload(c, raw, tz); } catch { return raw; }
     }),
+    request_id: args.request_id ?? undefined,
   };
   return c.call('POST', `/api/calendars/${encodeURIComponent(cal)}/events/batch`, { body });
 }
@@ -187,7 +189,7 @@ export async function quickAdd(c: Client, args: Args) {
   const text = String(args.text ?? '').trim();
   if (!text) fail('text_required');
   return c.call('POST', `/api/calendars/${encodeURIComponent(cal)}/quick-add`,
-    { body: { text, tz, confirm: args.confirm === true } });
+    { body: { text, tz, confirm: args.confirm === true, request_id: args.request_id } });
 }
 
 export async function updateEvent(c: Client, args: Args) {
@@ -218,8 +220,36 @@ export async function deleteEvent(c: Client, args: Args) {
   return c.call('DELETE', `/api/events/${encodeURIComponent(id)}`, { query: { scope, occ } });
 }
 
-export async function overrideOccurrence(c: Client, args: Args) {
+/** Deleted events from the last `days` (default 30) — the undo list. */
+export async function listTrash(c: Client, args: Args = {}) {
+  const tz = await tzOf(c, args);
+  const rows = await c.call<any[]>('GET', '/api/trash', { query: { days: args.days ?? 30 } });
+  return rows.map((r) => {
+    const eventTz = isValidZone(r.tz) ? String(r.tz) : tz;
+    return compact({
+      id: String(r.id), calendar_id: String(r.calendar_id), calendar: String(r.calendar_name),
+      title: String(r.title),
+      start: localLabel(Number(r.start_at), eventTz, Number(r.all_day) === 1),
+      rrule: r.rrule ? String(r.rrule) : undefined,
+      deleted: localLabel(Number(r.deleted_at), tz, false),
+    });
+  });
+}
+
+export async function restoreEvent(c: Client, args: Args) {
   const id = String(args.event_id ?? args.id ?? fail('event_id_required'));
+  return c.call('POST', `/api/events/${encodeURIComponent(id)}/restore`);
+}
+
+export async function restoreOccurrence(c: Client, args: Args) {
+  const id = String(args.event_id ?? args.id ?? fail('event_id_required'));
+  if (args.occurrence_start === undefined) fail('occurrence_start_required');
+  const tz = await tzOf(c, args);
+  return c.call('POST', `/api/events/${encodeURIComponent(id)}/restore-occurrence`,
+    { body: { occurrence_start: parseWhen(args.occurrence_start, tz) } });
+}
+
+export async function overrideOccurrence(c: Client, args: Args) {  const id = String(args.event_id ?? args.id ?? fail('event_id_required'));
   if (args.occurrence_start === undefined) fail('occurrence_start_required');
   const e = await c.call<any>('GET', `/api/events/${encodeURIComponent(id)}`);
   const tz = isValidZone(e.event?.tz) ? String(e.event.tz) : await tzOf(c);
@@ -341,6 +371,7 @@ export async function copyEvent(c: Client, args: Args) {
     rrule: args.keep_recurrence === true ? (e.rrule ?? undefined) : undefined,
     virtual_attendees: targetCal === String(e.calendar_id)
       ? (src.virtual_attendees ?? []).map((x: any) => String(x.id)) : undefined,
+    request_id: args.request_id ?? undefined,
   });
   const r = await c.call<{ id: string }>('POST', `/api/calendars/${encodeURIComponent(targetCal)}/events`, { body: payload });
   return {

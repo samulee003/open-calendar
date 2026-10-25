@@ -136,9 +136,20 @@ create table if not exists agent_tokens (
   token        text primary key,
   user_id      text not null references users(id) on delete cascade,
   name         text not null default 'agent',
+  scopes       text not null default 'read,write,delete',
   created_at   integer not null,
   last_used_at integer,
   revoked_at   integer
+);
+
+-- Replay protection for agent retries: one stored response per (user, request_id).
+create table if not exists idempotency (
+  user_id    text not null references users(id) on delete cascade,
+  key        text not null,
+  body_hash  text not null,
+  response   text not null,
+  created_at integer not null,
+  primary key (user_id, key)
 );
 
 -- People without accounts who still appear on events: kids, pets, cars…
@@ -187,6 +198,7 @@ const MIGRATIONS = [
   'alter table subscriptions add column expires_at integer',
   'alter table subscriptions add column revoked_at integer',
   'alter table subscriptions add column last_used_at integer',
+  "alter table agent_tokens add column scopes text not null default 'read,write,delete'",
 ];
 
 export function openDb(path: string): DatabaseSync {

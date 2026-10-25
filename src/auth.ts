@@ -47,23 +47,28 @@ export function userByToken(store: Store, token: string | undefined) {
 }
 
 const AGENT_TOKEN_PREFIX = 'cal_';
+export const TOKEN_SCOPES = ['read', 'write', 'delete'] as const;
+export type TokenScope = typeof TOKEN_SCOPES[number];
 
-export function createAgentToken(store: Store, userId: string, name: string): string {
+export function createAgentToken(store: Store, userId: string, name: string, scopes: string[] = [...TOKEN_SCOPES]): string {
   const token = AGENT_TOKEN_PREFIX + randomBytes(24).toString('base64url');
-  store.run('insert into agent_tokens (token, user_id, name, created_at) values (?,?,?,?)',
-    token, userId, name.slice(0, 60), Date.now());
+  store.run('insert into agent_tokens (token, user_id, name, scopes, created_at) values (?,?,?,?,?)',
+    token, userId, name.slice(0, 60), scopes.join(','), Date.now());
   return token;
 }
 
-export function userByAgentToken(store: Store, token: string | undefined) {
+/** Resolves a bearer token to its user plus the scopes it was issued with. */
+export function agentTokenAuth(store: Store, token: string | undefined): { user: any; scopes: string[] } | null {
   if (!token || !token.startsWith(AGENT_TOKEN_PREFIX)) return null;
   const row = store.get(
-    `select u.* from agent_tokens a join users u on u.id = a.user_id
+    `select u.*, a.scopes as token_scopes from agent_tokens a join users u on u.id = a.user_id
      where a.token = ? and a.revoked_at is null`, token,
   );
   if (!row) return null;
   store.run('update agent_tokens set last_used_at = ? where token = ?', Date.now(), token);
-  return row;
+  const scopes = String(row.token_scopes ?? 'read,write,delete').split(',').map((s) => s.trim()).filter(Boolean);
+  delete row.token_scopes;
+  return { user: row, scopes };
 }
 
 export function parseCookies(header: string | undefined): Record<string, string> {

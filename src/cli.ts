@@ -12,7 +12,7 @@ const USAGE = `shared-calendar agent CLI
 
 帳號與 token
   login --email E --password P [--base URL]   登入並把 session 存進設定檔
-  token create [--name N]                     產生長期 agent token（只顯示這一次）
+  token create [--name N] [--scopes read,write,delete]   產生長期 agent token（只顯示這一次）
   token list | token revoke <token>
   whoami
 
@@ -29,6 +29,9 @@ const USAGE = `shared-calendar agent CLI
   update <event-id> [--title …] [--start …] [--end …] [--rrule …] [--note …]
                     [--location …] [--label-id N] [--reminders …] [--json]
   delete <event-id> [--scope all|future|occurrence] [--occ T] [--json]
+  trash [--days 30] [--json]                  最近刪除（可還原）
+  restore <event-id>                          還原被刪除的整個行程
+  restore-occurrence <event-id> --occ T       還原被刪除的某一次
   override <event-id> --occ T [--title …] [--start …] [--end …] [--gone]
   copy <event-id> [--start T | --shift-days N] [--occurrence T]
        [--to-calendar ID] [--title T] [--keep-recurrence]
@@ -87,6 +90,11 @@ function boolFlag(v: string | boolean | undefined): boolean | undefined {
   return undefined;
 }
 
+function compactBody(o: Record<string, unknown>): Record<string, unknown> {
+  for (const k of Object.keys(o)) if (o[k] === undefined) delete o[k];
+  return o;
+}
+
 function eventArgs(pos: string[], flags: Record<string, string | boolean>): T.Args {
   return {
     event_id: pos[1],
@@ -99,6 +107,7 @@ function eventArgs(pos: string[], flags: Record<string, string | boolean>): T.Ar
     occurrence_start: flags.occ, scope: flags.scope, gone: flags.gone === true ? true : undefined,
     shift_days: flagNum(flags, 'shift-days'), to_calendar_id: flags['to-calendar'],
     keep_recurrence: boolFlag(flags['keep-recurrence']),
+    request_id: flags['request-id'],
   };
 }
 
@@ -129,7 +138,8 @@ async function main() {
     }
 
     case 'token': {
-      if (sub === 'create') result = await client.call('POST', '/api/agent-tokens', { body: { name: flags.name ?? 'agent' } });
+      if (sub === 'create') result = await client.call('POST', '/api/agent-tokens',
+        { body: compactBody({ name: flags.name ?? 'agent', scopes: flags.scopes }) });
       else if (sub === 'list') result = await client.call('GET', '/api/agent-tokens');
       else if (sub === 'revoke') result = await client.call('POST', '/api/agent-tokens/revoke',
         { body: { token: pos[2] ?? '' } });
@@ -179,6 +189,20 @@ async function main() {
     case 'update': result = await T.updateEvent(client, eventArgs(pos, flags)); break;
 
     case 'delete': result = await T.deleteEvent(client, eventArgs(pos, flags)); break;
+
+    case 'trash': {
+      const rows = await T.listTrash(client, { days: flagNum(flags, 'days'), tz: flags.tz });
+      result = json ? rows : (rows.length
+        ? rows.map((r: any) => `${r.deleted} 刪除  ${r.start}  ${r.title}  [${r.id}]`).join('\n')
+        : '(垃圾桶是空的)');
+      break;
+    }
+
+    case 'restore': result = await T.restoreEvent(client, { event_id: pos[1] }); break;
+
+    case 'restore-occurrence': result = await T.restoreOccurrence(client, {
+      event_id: pos[1], occurrence_start: flags.occ, tz: flags.tz,
+    }); break;
 
     case 'override': result = await T.overrideOccurrence(client, eventArgs(pos, flags)); break;
 

@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { freshStore, type Store, type Row } from './db.ts';
-import { parseCookies, sessionCookie, clearCookie, userByToken, userByAgentToken } from './auth.ts';
+import { parseCookies, sessionCookie, clearCookie, userByToken, agentTokenAuth } from './auth.ts';
 import { routes } from './api.ts';
 
 const HERE = resolve(fileURLToPath(new URL('.', import.meta.url)));
@@ -87,8 +87,20 @@ export function makeServer(store: Store) {
     // `via` lets routes distinguish them: token management must be a browser session,
     // so a leaked agent token cannot mint replacements or revoke its siblings.
     const cookieUser = userByToken(store, cookies.sid) as Row | null;
-    const via = cookieUser ? 'cookie' : bearer ? 'token' : null;
-    let user: Row | null = (cookieUser ?? userByAgentToken(store, bearer)) as Row | null;
+    const tokenAuth = cookieUser ? null : agentTokenAuth(store, bearer);
+    const via = cookieUser ? 'cookie' : tokenAuth ? 'token' : null;
+    const scopes: string[] = tokenAuth?.scopes ?? [];
+    let user: Row | null = (cookieUser ?? tokenAuth?.user ?? null) as Row | null;
+
+    // Agent tokens are scoped: read covers GET, write covers POST/PUT, delete covers
+    // DELETE. Browser sessions are unrestricted.
+    if (via === 'token' && url.pathname.startsWith('/api/')) {
+      const required = method === 'GET' || method === 'HEAD' ? 'read' : method === 'DELETE' ? 'delete' : 'write';
+      if (!scopes.includes(required)) {
+        send(403, { error: 'insufficient_scope', required, scopes });
+        return;
+      }
+    }
     // Trust X-Forwarded-For only behind a proxy you control; otherwise a client can
     // rotate the header to dodge the per-IP login limit.
     const forwarded = process.env.TRUST_PROXY === '1'
@@ -121,7 +133,7 @@ export function makeServer(store: Store) {
       if (body !== undefined && typeof body !== 'object') { send(400, { error: 'json_object_required' }); return; }
 
       try {
-        const result = await (route.fn as any)({ store, user, via, params, query: url.searchParams, body, ip });
+        const result = await (route.fn as any)({ store, user, via, params, query: url.searchParams, body, ip, headers: req.headers });
         const headers: Record<string, string> = {};
         // Only an explicit `session` field sets the cookie. Inferring it from any
         // field named `token` once clobbered the session with an ICS token.

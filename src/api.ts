@@ -1,10 +1,11 @@
 import type { Store, Row } from './db.ts';
+import { createHash } from 'node:crypto';
 import { expand, parseRRule } from './rrule.ts';
 import { icsForCalendar } from './ics.ts';
 import { dayKey, isValidZone, wallParts } from './tz.ts';
 import { parseQuickAdd } from './nlp.ts';
 import {
-  newId, randomCode, hashPass, verifyPass, createSession, userByToken, safeEqual, createAgentToken,
+  newId, randomCode, hashPass, verifyPass, createSession, userByToken, safeEqual, createAgentToken, TOKEN_SCOPES,
 } from './auth.ts';
 
 const DAY = 86400000;
@@ -17,6 +18,7 @@ export type Ctx = {
   query: URLSearchParams;
   body: any;
   ip: string;
+  headers: Record<string, string | string[] | undefined>;
 };
 
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
@@ -42,6 +44,51 @@ function needSession(ctx: Ctx): Row {
   const u = needUser(ctx);
   if (ctx.via !== 'cookie') throw new HttpError(403, 'session_required');
   return u;
+}
+
+function parseScopes(raw: unknown): string[] {
+  if (raw === undefined || raw === null) return [...TOKEN_SCOPES];
+  const list = (Array.isArray(raw) ? raw.map(String) : String(raw).split(','))
+    .map((s) => s.trim()).filter(Boolean);
+  const scopes = [...new Set(list)];
+  if (!scopes.length || scopes.some((s) => !(TOKEN_SCOPES as readonly string[]).includes(s)))
+    throw new HttpError(400, 'bad_scopes');
+  return scopes;
+}
+
+// ---------- idempotency ----------
+// An agent that retries a create must not create twice. The stored response is
+// replayed for the same (user, request_id); a different body under the same key
+// is a caller bug, so it fails loudly instead of guessing.
+const IDEMPOTENCY_TTL_MS = 7 * DAY;
+
+function requestIdOf(ctx: Ctx): string | null {
+  const raw = ctx.body?.request_id ?? ctx.headers?.['idempotency-key'];
+  const key = String(raw ?? '').trim();
+  if (!key) return null;
+  if (key.length > 120) throw new HttpError(400, 'request_id_too_long');
+  return key;
+}
+
+function bodyHashOf(ctx: Ctx): string {
+  const body = { ...(ctx.body ?? {}) };
+  delete body.request_id;
+  return createHash('sha256').update(JSON.stringify(body)).digest('hex');
+}
+
+function replayIdempotent(ctx: Ctx, key: string, hash: string): any | null {
+  const row = ctx.store.get('select body_hash, response from idempotency where user_id = ? and key = ?',
+    String(ctx.user!.id), key);
+  if (!row) return null;
+  if (String(row.body_hash) !== hash) throw new HttpError(409, 'idempotency_key_reused');
+  return JSON.parse(String(row.response));
+}
+
+function rememberIdempotent(ctx: Ctx, key: string, hash: string, response: unknown) {
+  const now = Date.now();
+  ctx.store.run('delete from idempotency where created_at < ?', now - IDEMPOTENCY_TTL_MS);
+  ctx.store.run('insert or replace into idempotency (user_id, key, body_hash, response, created_at) values (?,?,?,?,?)',
+    String(ctx.user!.id), key, hash, JSON.stringify(response), now);
 }
 
 function membership(ctx: Ctx, calendarId: string): Row | null {
@@ -272,7 +319,7 @@ export const routes = {
   'GET /api/agent-tokens': (ctx: Ctx) => {
     const u = needSession(ctx);
     return ctx.store.all(
-      `select substr(token, 1, 10) || '…' as token_prefix, name, created_at, last_used_at, revoked_at
+      `select substr(token, 1, 10) || '…' as token_prefix, name, scopes, created_at, last_used_at, revoked_at
        from agent_tokens where user_id = ? order by created_at desc`, String(u.id));
   },
 
@@ -282,7 +329,8 @@ export const routes = {
       'select count(*) as n from agent_tokens where user_id = ? and revoked_at is null', String(u.id))?.n ?? 0);
     if (live >= 10) throw new HttpError(400, 'too_many_tokens');
     const name = String(ctx.body?.name ?? 'agent').trim().slice(0, 60) || 'agent';
-    return { token: createAgentToken(ctx.store, String(u.id), name), name };
+    const scopes = parseScopes(ctx.body?.scopes);
+    return { token: createAgentToken(ctx.store, String(u.id), name, scopes), name, scopes };
   },
 
   // The token travels in the body, not the URL, so proxy access logs cannot replay it.
@@ -489,8 +537,16 @@ export const routes = {
     if (ctx.body?.confirm !== true && parsed.confidence !== 'high') {
       return { needs_confirmation: true, parsed, display, event: payload };
     }
+    const idem = requestIdOf(ctx);
+    const hash = idem ? bodyHashOf(ctx) : '';
+    if (idem) {
+      const hit = replayIdempotent(ctx, idem, hash);
+      if (hit) return hit;
+    }
     const id = insertEvent(ctx, ctx.params.id, normalizeEvent(payload, tz), String(u.id));
-    return { created: id, parsed, display };
+    const out = { created: id, parsed, display };
+    if (idem) rememberIdempotent(ctx, idem, hash, out);
+    return out;
   },
 
   'GET /api/calendars/:id/events': (ctx: Ctx) => {
@@ -511,14 +567,28 @@ export const routes = {
   'POST /api/calendars/:id/events': (ctx: Ctx) => {
     const u = needUser(ctx);
     mustView(ctx, ctx.params.id);
+    const idem = requestIdOf(ctx);
+    const hash = idem ? bodyHashOf(ctx) : '';
+    if (idem) {
+      const hit = replayIdempotent(ctx, idem, hash);
+      if (hit) return hit;
+    }
     const ev = normalizeEvent(ctx.body, String(u.tz ?? 'UTC'));
-    return { id: insertEvent(ctx, ctx.params.id, ev, String(u.id)) };
+    const out = { id: insertEvent(ctx, ctx.params.id, ev, String(u.id)) };
+    if (idem) rememberIdempotent(ctx, idem, hash, out);
+    return out;
   },
 
   // The endpoint this whole project exists for: one request, many dates.
   'POST /api/calendars/:id/events/batch': (ctx: Ctx) => {
     const u = needUser(ctx);
     mustView(ctx, ctx.params.id);
+    const idem = requestIdOf(ctx);
+    const hash = idem ? bodyHashOf(ctx) : '';
+    if (idem) {
+      const hit = replayIdempotent(ctx, idem, hash);
+      if (hit) return hit;
+    }
     const list = ctx.body?.events;
     if (!Array.isArray(list) || !list.length) throw new HttpError(400, 'events_required');
     if (list.length > 500) throw new HttpError(400, 'too_many_in_batch');
@@ -527,7 +597,9 @@ export const routes = {
       try { created.push(insertEvent(ctx, ctx.params.id, normalizeEvent(raw, String(u.tz ?? 'UTC')), String(u.id))); }
       catch (e) { failed.push({ index: i, reason: e instanceof HttpError ? e.message : 'unknown' }); }
     });
-    return { created: created.length, ids: created, failed };
+    const out = { created: created.length, ids: created, failed };
+    if (idem) rememberIdempotent(ctx, idem, hash, out);
+    return out;
   },
 
   'GET /api/events/:id': (ctx: Ctx) => {
@@ -615,9 +687,48 @@ export const routes = {
     return { scope: 'future', until };
   },
 
-  // edit one occurrence without touching the series
-  'POST /api/events/:id/override': (ctx: Ctx) => {
+  // Recently deleted events across the user's calendars; deletes are recoverable.
+  'GET /api/trash': (ctx: Ctx) => {
+    const u = needUser(ctx);
+    const days = Math.min(365, Math.max(1, Number(ctx.query.get('days') ?? 30) || 30));
+    return ctx.store.all(
+      `select e.id, e.calendar_id, c.name as calendar_name, e.title, e.all_day,
+              e.start_at, e.end_at, e.tz, e.rrule, e.deleted_at
+       from events e
+       join calendars c on c.id = e.calendar_id
+       join members m on m.calendar_id = e.calendar_id and m.user_id = ?
+       where e.deleted_at is not null and e.deleted_at > ?
+       order by e.deleted_at desc limit 200`,
+      String(u.id), Date.now() - days * DAY);
+  },
+
+  'POST /api/events/:id/restore': (ctx: Ctx) => {
     const e = ctx.store.get('select * from events where id = ?', ctx.params.id);
+    if (!e) throw new HttpError(404, 'no_such_event');
+    mustView(ctx, String(e.calendar_id));
+    if (e.deleted_at == null) return { restored: false, already_visible: true };
+    ctx.store.run('update events set deleted_at = null, updated_at = ? where id = ?', Date.now(), ctx.params.id);
+    return { restored: true };
+  },
+
+  // Undo "delete this occurrence": the day was appended to EXDATE, so remove it again.
+  'POST /api/events/:id/restore-occurrence': (ctx: Ctx) => {
+    const e = ctx.store.get('select * from events where id = ?', ctx.params.id);
+    if (!e || e.deleted_at != null) throw new HttpError(404, 'no_such_event');
+    mustView(ctx, String(e.calendar_id));
+    if (!e.rrule) throw new HttpError(400, 'not_recurring');
+    const occ = intOrNull(ctx.body?.occurrence_start);
+    if (occ === null) throw new HttpError(400, 'occurrence_start_required');
+    const day = dayKey(occ, String(e.tz || 'UTC'));
+    const ex = (JSON.parse(String(e.exdates || '[]')) as unknown[]).map(String);
+    if (!ex.includes(day)) return { restored: false, day };
+    ctx.store.run('update events set exdates = ?, updated_at = ? where id = ?',
+      JSON.stringify(ex.filter((d) => d !== day).sort()), Date.now(), ctx.params.id);
+    return { restored: true, day };
+  },
+
+  // edit one occurrence without touching the series
+  'POST /api/events/:id/override': (ctx: Ctx) => {    const e = ctx.store.get('select * from events where id = ?', ctx.params.id);
     if (!e) throw new HttpError(404, 'no_such_event');
     mustView(ctx, String(e.calendar_id));
     const occ = intOrNull(ctx.body?.occurrence_start);
