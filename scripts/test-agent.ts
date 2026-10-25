@@ -137,6 +137,11 @@ ok('ICS reachable without any auth', ics.status === 200 && (await ics.text()).in
 const labels = await T.listLabels(c, {}) as any[];
 ok('list_labels works', labels.length === 3);
 
+const di = await T.getDateInfo(c, { date: '2026-11-02' }) as any;
+ok('get_date_info returns a Macau holiday', di.holiday?.name === '追思節' && di.holiday_known === true, JSON.stringify(di));
+const di2 = await T.getDateInfo(c, { date: '2025-12-25' }) as any;
+ok('get_date_info flags unknown coverage', di2.holiday_known === false && !!di2.note);
+
 // ---- virtual members ----
 const kid = await T.createVirtualMember(c, { name: '李悅', account_type: 'child' }) as any;
 fatal('create_virtual_member', !!kid.id, JSON.stringify(kid));
@@ -237,6 +242,9 @@ ok('cli human output', cliHuman.code === 0 && cliHuman.out.includes('CLI 事件'
 const cliErr = await run(['show', 'evt_nope', '--json']);
 ok('cli error exits 1 with json', cliErr.code === 1 && JSON.parse(cliErr.out).status === 404, cliErr.out.slice(0, 200));
 
+const cliDate = await run(['dateinfo', '--date', '2026-11-02', '--json']);
+ok('cli dateinfo', cliDate.code === 0 && JSON.parse(cliDate.out).holiday.name === '追思節', cliDate.out.slice(0, 200));
+
 // ---- MCP stdio subprocess ----
 const mcp = spawn(process.execPath, [join(ROOT, 'src', 'mcp.ts'), '--base', base, '--token', token2, '--calendar', calId], {
   env: { ...childEnv, CAL_BASE: base, CAL_TOKEN: token2 },
@@ -276,7 +284,7 @@ const names = (tools.result?.tools ?? []).map((t: any) => t.name);
 const expected = ['list_calendars', 'list_events', 'get_event', 'create_event', 'create_events', 'quick_add',
   'update_event', 'delete_event', 'override_occurrence', 'find_free_slots', 'add_comment', 'list_labels',
   'create_subscription', 'copy_event', 'list_virtual_members', 'create_virtual_member', 'update_virtual_member',
-  'delete_virtual_member', 'list_memos', 'create_memo', 'update_memo', 'delete_memo'];
+  'delete_virtual_member', 'list_memos', 'create_memo', 'update_memo', 'delete_memo', 'get_date_info'];
 fatal('mcp advertises every tool', names.length === expected.length && expected.every((n) => names.includes(n)), JSON.stringify(names));
 ok('mcp schemas are objects with descriptions', tools.result.tools.every((t: any) => t.inputSchema?.type === 'object' && typeof t.description === 'string'));
 
@@ -294,6 +302,10 @@ const memosCall = await rpc('tools/call', { name: 'list_memos', arguments: {} })
 ok('mcp list_memos', JSON.parse(memosCall.result.content[0].text).some((m: any) => m.title === 'MCP 備忘'));
 const vmsCall = await rpc('tools/call', { name: 'list_virtual_members', arguments: {} });
 ok('mcp list_virtual_members', Array.isArray(JSON.parse(vmsCall.result.content[0].text)));
+
+const dateCall = await rpc('tools/call', { name: 'get_date_info', arguments: { date: '2027-02-06' } });
+const dateOut = JSON.parse(dateCall.result.content[0].text);
+ok('mcp get_date_info', dateOut.holiday?.name === '農曆正月初一', JSON.stringify(dateOut));
 
 const errCall = await rpc('tools/call', { name: 'get_event', arguments: { event_id: 'evt_nope' } });
 ok('mcp tool error is isError not protocol error', errCall.result?.isError === true && JSON.parse(errCall.result.content[0].text).status === 404, JSON.stringify(errCall).slice(0, 300));

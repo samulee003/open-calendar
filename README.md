@@ -30,6 +30,7 @@ export PATH="/d/rea-toolchain/node-v24.18.0-win-x64:$PATH"
 ```bash
 bash scripts/check.sh            # 全部測試,NODE=... 可指定 node 執行檔
 node scripts/test-nlp.ts         # 中文自然语言解析(quick add)
+node scripts/test-holidays.ts    # 澳門公眾假期表完整性 + get_date_info
 node scripts/test-rrule.ts       # 重複規則引擎(含 +8 與跨 DST 案例)
 node scripts/test-import.ts      # CSV 匯入解析器
 node scripts/test-e2e-import.ts  # 真啟動伺服器 + 真 spawn CLI 匯入 examples/lessons.csv
@@ -52,6 +53,7 @@ node scripts/selftest.ts         # 端對端:鑑權、成員、批次、重複�
 | 家庭成員 | 沒有帳號的人(小孩、寵物、車…)可建成**虛擬成員**,掛在行程上;刪除成員會自動清掉標記 |
 | 複製行程 | 複製單一事件或重複系列的**某一次**到新時間/另一個日曆(可選帶走重複規則) |
 | 備忘 | 不屬於任何行程的日曆級筆記,可置頂 |
+| 澳門假期 | 公眾假期與補假查詢(2026–2027 官方表),agent 可問「這天放假嗎/下一個假期」 |
 | 批次匯入 | 一次送 500 筆;網頁端貼一行一筆,或 CLI 讀 CSV |
 | 手機同步 | 每個日曆可產生**唯讀 ICS 訂閱網址**,iPhone 內建日历、Android 的 DAVx⁵／Calendri 都能收 |
 | 時區 | 依 IANA 時區名在**當地牆上時間**展開重複,不是用 UTC 日期硬算 |
@@ -134,6 +136,7 @@ node src/cli.ts add --title "大提琴課" --start "2026-11-05 14:00" --end "202
 node src/cli.ts add --title "古琴班" --start "2026-11-05 19:00" --rrule "FREQ=WEEKLY;BYDAY=TH"
 node src/cli.ts quick "明天下午3點看牙醫"          # 自然语言;没把握时会回 needs_confirmation
 node src/cli.ts free --date 2026-11-05 --duration 60
+node src/cli.ts dateinfo --date 2026-11-02 --days 30   # 澳門公眾假期/星期/下一個假期
 node src/cli.ts show evt_…  |  update evt_… --title "新標題"  |  delete evt_… --scope occurrence --occ 2026-11-12
 node src/cli.ts copy evt_… --shift-days 7        # 複製到下一週;--occurrence 只複製某一次
 node src/cli.ts members                          # 虛擬成員(小孩/寵物)
@@ -148,13 +151,14 @@ node src/cli.ts subscribe --days 365               # 唯读 ICS 订阅网址
 
 ### 3. MCP server(给会说 MCP 的 agent)
 
-`src/mcp.ts` 是零依赖的 stdio MCP server,提供 22 个工具:
+`src/mcp.ts` 是零依赖的 stdio MCP server,提供 23 个工具:
 `list_calendars` / `list_events` / `get_event` / `create_event` / `create_events`(批次)/
 `quick_add` / `update_event` / `delete_event` / `override_occurrence`(只改某一次)/
 `copy_event`(复制单次或某一次) / `find_free_slots` / `add_comment` / `list_labels` /
 `create_subscription` /
 `list_virtual_members` / `create_virtual_member` / `update_virtual_member` / `delete_virtual_member`(家庭成員)/
-`list_memos` / `create_memo` / `update_memo` / `delete_memo`(備忘)。
+`list_memos` / `create_memo` / `update_memo` / `delete_memo`(備忘) /
+`get_date_info`(澳門公眾假期、補假、星期、下一個假期)。
 
 在你的 agent 里登记(Qoder / Claude Desktop 等的 mcp 设置皆同型):
 
@@ -178,8 +182,12 @@ node src/cli.ts subscribe --days 365               # 唯读 ICS 订阅网址
 工具回报刻意紧凑(本地时间标签 + `occurrence_start` epoch),重复规则的展开、override、EXDATE
 都由服务器算好,agent 不需要自己处理 RFC 5545。
 
-验证:`node scripts/test-agent.ts` 会真启服务器,把 token 生命周期、22 个工具、CLI 子进程、
-MCP stdio 子进程全部走一遍(66 个断言)。
+验证:`node scripts/test-agent.ts` 会真启服务器,把 token 生命周期、23 个工具、CLI 子进程、
+MCP stdio 子进程全部走一遍(70 个断言)。
+
+`get_date_info` 的假期表是**写死的官方资料**(2026–2027,含補假),放在
+[src/holidays.ts](src/holidays.ts)。每年公报刊出新表后要手动补上:超出覆盖范围时工具会明确回
+`holiday_known: false`,不会把「未知」当成「要上班」。`scripts/test-holidays.ts` 会核对星期与补假数。
 
 ## 安全邊界(已知,不是沒做)
 

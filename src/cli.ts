@@ -33,6 +33,7 @@ const USAGE = `shared-calendar agent CLI
   copy <event-id> [--start T | --shift-days N] [--occurrence T]
        [--to-calendar ID] [--title T] [--keep-recurrence]
   free [--date YYYY-MM-DD] [--duration 60] [--from 08:00] [--to 22:00] [--json]
+  dateinfo --date YYYY-MM-DD [--days N] [--json]   澳門公眾假期/星期
   comment <event-id> <文字…>
   labels | subscribe [--days N] | subscriptions | unsubscribe <token>
 
@@ -182,6 +183,10 @@ async function main() {
     case 'override': result = await T.overrideOccurrence(client, eventArgs(pos, flags)); break;
 
     case 'copy': result = await T.copyEvent(client, eventArgs(pos, flags)); break;
+
+    case 'dateinfo': result = await T.getDateInfo(client, {
+      date: flags.date ?? pos[1], days: flagNum(flags, 'days'), tz: flags.tz,
+    }); break;
 
     case 'members': result = await T.listVirtualMembers(client, { calendar_id: flags.calendar }); break;
 

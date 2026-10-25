@@ -241,6 +241,16 @@ const TOOLS: { name: string; description: string; inputSchema: any; run: (c: Cli
     inputSchema: obj({ memo_id: s('memo id') }, ['memo_id']),
     run: (c, a) => T.deleteMemo(c, a),
   },
+  {
+    name: 'get_date_info',
+    description: 'Weekday/weekend plus Macau public holidays (official 2026–2027 table incl. 補假). Coverage is explicit: outside 2026-01-01..2027-12-31, holiday_known=false and the day is unknown — do not assume it is a working day. Pass `days` to list holidays in a window; the result also carries the next holiday.',
+    inputSchema: obj({
+      date: s('day to inspect (YYYY-MM-DD)'),
+      days: n('also list holidays in [date, date+days] (max 366)'),
+      tz: s('IANA timezone, used when date is not YYYY-MM-DD'),
+    }, ['date']),
+    run: (c, a) => T.getDateInfo(c, a),
+  },
 ];
 
 const TOOL_MAP = new Map(TOOLS.map((t) => [t.name, t]));

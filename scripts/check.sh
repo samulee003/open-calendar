@@ -8,7 +8,7 @@ if ! "$NODE" -e 'if (Number(process.versions.node.split(".")[0]) < 22) process.e
   echo "需要 Node 22.19+／24+（目前: $("$NODE" --version 2>/dev/null || echo 找不到 node)）"
   exit 2
 fi
-for t in test-nlp test-rrule test-import test-e2e-import test-agent selftest; do
+for t in test-nlp test-holidays test-rrule test-import test-e2e-import test-agent selftest; do
   echo "=== $t ==="
   "$NODE" "scripts/$t.ts"
 done

@@ -3,7 +3,8 @@
 // adapters stay thin and cannot drift apart in behavior.
 import type { Client } from './client.ts';
 import { ApiError } from './client.ts';
-import { wallParts, wallToUtc, isValidZone } from './tz.ts';
+import { wallParts, wallToUtc, isValidZone, dayKey, addDaysToKey } from './tz.ts';
+import { COVERAGE, holidayOn, holidaysBetween, isCovered, weekdayOf } from './holidays.ts';
 
 const DAY = 86400000;
 export type Args = Record<string, any>;
@@ -384,7 +385,6 @@ export async function deleteVirtualMember(c: Client, args: Args) {
 }
 
 // ---------- memos ----------
-
 export async function listMemos(c: Client, args: Args = {}) {
   const cal = resolveCal(c, args);
   return c.call('GET', `/api/calendars/${encodeURIComponent(cal)}/memos`);
@@ -412,6 +412,61 @@ export async function updateMemo(c: Client, args: Args) {
 export async function deleteMemo(c: Client, args: Args) {
   const id = String(args.memo_id ?? args.id ?? fail('memo_id_required'));
   return c.call('DELETE', `/api/memos/${encodeURIComponent(id)}`);
+}
+
+// ---------- date info (Macau public holidays) ----------
+
+const WEEKDAY_ZH = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+
+function dateKeyOf(value: unknown, tz: string): string {
+  const s = String(value ?? '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  if (!s) fail('date_required (YYYY-MM-DD)');
+  return dayKey(parseWhen(s, tz), tz);
+}
+
+/**
+ * Weekday/weekend plus Macau public holidays. The table only covers COVERAGE;
+ * outside it the answer is explicitly unknown (`holiday_known: false`) rather
+ * than "not a holiday".
+ */
+export async function getDateInfo(c: Client, args: Args = {}) {
+  const tz = await tzOf(c, args);
+  const date = dateKeyOf(args.date, tz);
+  const dow = weekdayOf(date);
+  const covered = isCovered(date);
+  const holiday = holidayOn(date);
+  const out: Args = {
+    date,
+    weekday: WEEKDAY_ZH[dow],
+    weekend: dow === 0 || dow === 6,
+    holiday: holiday ? { name: holiday.name, makeup: holiday.makeup } : null,
+    holiday_known: covered,
+    coverage: COVERAGE,
+    tz,
+  };
+  if (!covered) out.note = `公眾假期表只涵蓋 ${COVERAGE.from} 至 ${COVERAGE.to};此日是否放假未知`;
+
+  const days = Math.min(366, Math.max(0, Math.trunc(Number(args.days ?? 0)) || 0));
+  if (days > 0) {
+    const end = addDaysToKey(date, days);
+    out.range = { from: date, to: end };
+    out.holidays = holidaysBetween(date, end).map((x) => ({
+      date: x.date, weekday: WEEKDAY_ZH[weekdayOf(x.date)], name: x.name, makeup: x.makeup,
+    }));
+  }
+
+  if (covered) {
+    const next = holidaysBetween(addDaysToKey(date, 1), COVERAGE.to)[0];
+    if (next) {
+      const away = Math.round((Date.parse(`${next.date}T00:00:00Z`) - Date.parse(`${date}T00:00:00Z`)) / DAY);
+      out.next_holiday = {
+        date: next.date, weekday: WEEKDAY_ZH[weekdayOf(next.date)],
+        name: next.name, days_away: away,
+      };
+    }
+  }
+  return out;
 }
 
 
