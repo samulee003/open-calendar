@@ -9,11 +9,13 @@ export type ClientConfig = { base: string; token?: string; calendar?: string; tz
 
 export function loadConfig(overrides: Partial<ClientConfig> = {}): ClientConfig {
   const file = readFileConfig();
+  // An empty variable (very common in MCP host templates) must not shadow the file.
+  const pick = (...vals: (string | undefined)[]) => vals.find((v) => typeof v === 'string' && v !== '');
   return {
-    base: overrides.base ?? process.env.CAL_BASE ?? file.base ?? 'http://127.0.0.1:8787',
-    token: overrides.token ?? process.env.CAL_TOKEN ?? file.token,
-    calendar: overrides.calendar ?? process.env.CAL_CALENDAR ?? file.calendar,
-    tz: overrides.tz ?? process.env.CAL_TZ ?? file.tz,
+    base: pick(overrides.base, process.env.CAL_BASE, file.base) ?? 'http://127.0.0.1:8787',
+    token: pick(overrides.token, process.env.CAL_TOKEN, file.token),
+    calendar: pick(overrides.calendar, process.env.CAL_CALENDAR, file.calendar),
+    tz: pick(overrides.tz, process.env.CAL_TZ, file.tz),
   };
 }
 
