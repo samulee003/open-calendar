@@ -185,7 +185,7 @@ async function handle(store: Store, req: import('node:http').IncomingMessage, re
       } catch (e: any) {
         const status = typeof e?.status === 'number' ? e.status : 500;
         if (status === 500) console.error('ERR', url.pathname, e);
-        send(status, { error: e?.message ?? 'internal' });
+        send(status, { error: e?.message ?? 'internal', ...(e?.details ?? {}) });
       }
       return;
     }

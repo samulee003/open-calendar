@@ -30,10 +30,56 @@ export function saveConfig(patch: Partial<ClientConfig>): ClientConfig {
   return merged;
 }
 
+export type ErrorExtra = { message?: string; hint?: string; field?: string; required?: string };
+
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) { super(message); this.status = status; }
+  code: string;
+  hint?: string;
+  field?: string;
+  required?: string;
+  constructor(status: number, code: string, extra: ErrorExtra = {}) {
+    super(extra.message ?? code);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+    this.hint = extra.hint;
+    this.field = extra.field;
+    this.required = extra.required;
+  }
+
+  /** The shape the CLI and MCP adapters hand back: a stable code plus next steps. */
+  toJSON() {
+    return {
+      error: this.code,
+      message: this.message,
+      status: this.status,
+      ...(this.required ? { required: this.required } : {}),
+      ...(this.field ? { field: this.field } : {}),
+      ...(this.hint ? { hint: this.hint } : {}),
+    };
+  }
 }
+
+// Server errors already carry a stable code; the hint tells an agent what to do
+// instead of retrying the same failing call.
+const HINTS: Record<string, string> = {
+  need_login: 'the token is missing or was revoked; create a new agent token in the browser',
+  insufficient_scope: 'this token lacks the required scope; ask the user for a token that includes it, do not retry',
+  no_such_event: 'find the current id with list_events; deleted events appear in list_trash',
+  no_such_calendar: 'call list_calendars for the ids this account can use',
+  not_a_member: 'this account is not a member of that calendar',
+  owner_only: 'only the calendar owner can create invite codes',
+  bad_invite: 'the invite code is unknown; ask for a fresh one',
+  idempotency_key_reused: 'that request_id was already used with a different body; generate a new one',
+  stale_event: 'the event changed after you read it; call get_event and retry with the fresh updated_at',
+  bad_time: 'pass epoch ms from list_events, or "YYYY-MM-DD HH:MM"',
+  occurrence_not_found: 'pass the occurrence_start epoch reported by list_events',
+  no_such_token: 'the subscription token is unknown or already revoked',
+  bad_token: 'the subscription token is unknown or already revoked',
+  expired_token: 'this subscription link expired; create a new one',
+  bad_credentials: 'the email or password is wrong',
+};
 
 export class Client {
   base: string;
@@ -75,7 +121,14 @@ export class Client {
     const text = await res.text();
     let json: any;
     try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
-    if (!res.ok) throw new ApiError(res.status, String(json?.error ?? `http_${res.status}`));
+    if (!res.ok) {
+      const code = String(json?.error ?? `http_${res.status}`);
+      throw new ApiError(res.status, code, {
+        hint: typeof json?.hint === 'string' ? json.hint : HINTS[code],
+        field: typeof json?.field === 'string' ? json.field : undefined,
+        required: typeof json?.required === 'string' ? json.required : undefined,
+      });
+    }
     return json as T;
   }
 }

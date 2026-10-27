@@ -19,7 +19,12 @@ const USAGE = `shared-calendar agent CLI
 日曆與行程
   calendars                                   列出日曆
   use <calendar-id>                           設預設日曆
-  events [--from T] [--to T] [--days N] [--calendar ID] [--json]
+  calendar add --name 名稱 [--color #hex]     建立日曆
+  calendar members                            列出成員（真帳號）
+  calendar invite                             產生邀請碼（需 owner）
+  calendar join <code>                        用邀請碼加入
+  events [--from T] [--to T] [--days N] [--calendar ID]
+         [--q 文字] [--label-id N] [--detail full] [--json]
   show <event-id> [--json]
   add --title T [--start "YYYY-MM-DD HH:MM"] [--end T] [--rrule R]
       [--all-day --date YYYY-MM-DD] [--note N] [--location L]
@@ -27,7 +32,8 @@ const USAGE = `shared-calendar agent CLI
   quick "明天下午3點看牙醫" [--confirm] [--json]
   batch --file events.json                    JSON 陣列,欄位同 add
   update <event-id> [--title …] [--start …] [--end …] [--rrule …] [--note …]
-                    [--location …] [--label-id N] [--reminders …] [--json]
+                    [--location …] [--label-id N] [--reminders …]
+                    [--expected-updated-at MS] [--json]
   delete <event-id> [--scope all|future|occurrence] [--occ T] [--json]
   trash [--days 30] [--json]                  最近刪除（可還原）
   restore <event-id>                          還原被刪除的整個行程
@@ -108,6 +114,8 @@ function eventArgs(pos: string[], flags: Record<string, string | boolean>): T.Ar
     shift_days: flagNum(flags, 'shift-days'), to_calendar_id: flags['to-calendar'],
     keep_recurrence: boolFlag(flags['keep-recurrence']),
     request_id: flags['request-id'],
+    q: flags.q, detail: flags.detail,
+    expected_updated_at: flagNum(flags, 'expected-updated-at'),
   };
 }
 
@@ -129,7 +137,12 @@ async function main() {
     case 'help': console.log(USAGE); return;
 
     case 'login': {
-      if (typeof flags.email !== 'string' || typeof flags.password !== 'string') throw new ApiError(400, 'need --email and --password');
+      if (typeof flags.email !== 'string' || typeof flags.password !== 'string') {
+        throw new ApiError(400, 'missing_credentials', {
+          message: 'need --email and --password',
+          hint: 'login --email E --password P [--base URL]',
+        });
+      }
       const r = await client.call<{ session: string; user_id: string }>('POST', '/api/login',
         { body: { email: flags.email, password: flags.password } });
       saveConfig({ base: client.base, token: r.session });
@@ -143,7 +156,7 @@ async function main() {
       else if (sub === 'list') result = await client.call('GET', '/api/agent-tokens');
       else if (sub === 'revoke') result = await client.call('POST', '/api/agent-tokens/revoke',
         { body: { token: pos[2] ?? '' } });
-      else throw new ApiError(400, 'token create|list|revoke <token>');
+      else throw new ApiError(400, 'bad_command', { message: 'token create|list|revoke <token>' });
       break;
     }
 
@@ -151,20 +164,36 @@ async function main() {
 
     case 'calendars': result = await T.listCalendars(client); break;
 
+    case 'calendar': {
+      if (sub === 'add') result = await T.createCalendar(client, { name: flags.name, color: flags.color });
+      else if (sub === 'members') result = await T.listMembers(client, { calendar_id: flags.calendar });
+      else if (sub === 'invite') result = await T.createInvite(client, { calendar_id: flags.calendar });
+      else if (sub === 'join') {
+        if (!pos[2]) throw new ApiError(400, 'code_required', { hint: 'calendar join <code>' });
+        result = await T.joinCalendar(client, { code: pos[2] });
+      } else throw new ApiError(400, 'bad_command', { message: 'calendar add|members|invite|join' });
+      break;
+    }
+
     case 'use': {
       const id = pos[1];
-      if (!id) throw new ApiError(400, 'use <calendar-id>');
+      if (!id) throw new ApiError(400, 'calendar_id_required', { hint: 'use <calendar-id>' });
       const cals = await T.listCalendars(client);
-      if (!cals.some((c: any) => c.id === id)) throw new ApiError(404, 'no_such_calendar_or_not_member');
+      if (!cals.items.some((c: any) => c.id === id)) {
+        throw new ApiError(404, 'no_such_calendar_or_not_member', { hint: 'run `calendars` to see the ids' });
+      }
       saveConfig({ calendar: id });
       result = { ok: true, default_calendar: id };
       break;
     }
 
     case 'events': {
-      const r = await T.listEvents(client, { from: flags.from, to: flags.to, days: flagNum(flags, 'days'), calendar_id: flags.calendar, tz: flags.tz });
+      const r = await T.listEvents(client, {
+        from: flags.from, to: flags.to, days: flagNum(flags, 'days'), calendar_id: flags.calendar, tz: flags.tz,
+        q: flags.q, label_id: flagNum(flags, 'label-id'), detail: flags.detail,
+      });
       result = json ? r : `${r.count} 筆 (${r.from} → ${r.to}, ${r.tz})\n` + r.events.map((e: any) =>
-        `  ${e.start}${e.end ? `–${e.end.slice(11)}` : ''}  ${e.title}${e.rrule ? ' ↻' : ''}  [${e.id}]`).join('\n');
+        `  ${e.start}${e.end ? `–${e.end.slice(11)}` : ''}  ${e.title}${e.rrule ? ' ↻' : ''}${e.note ? `  #${e.note}` : ''}  [${e.id}]`).join('\n');
       break;
     }
 
@@ -174,7 +203,7 @@ async function main() {
 
     case 'quick': {
       const text = pos.slice(1).join(' ');
-      if (!text) throw new ApiError(400, 'quick "自然語言句子"');
+      if (!text) throw new ApiError(400, 'text_required', { hint: 'quick "明天下午3點看牙醫"' });
       result = await T.quickAdd(client, { text, confirm: flags.confirm === true, calendar_id: flags.calendar, tz: flags.tz });
       break;
     }
@@ -191,8 +220,8 @@ async function main() {
     case 'delete': result = await T.deleteEvent(client, eventArgs(pos, flags)); break;
 
     case 'trash': {
-      const rows = await T.listTrash(client, { days: flagNum(flags, 'days'), tz: flags.tz });
-      result = json ? rows : (rows.length
+      const rows = (await T.listTrash(client, { days: flagNum(flags, 'days'), tz: flags.tz })).items;
+      result = json ? { items: rows } : (rows.length
         ? rows.map((r: any) => `${r.deleted} 刪除  ${r.start}  ${r.title}  [${r.id}]`).join('\n')
         : '(垃圾桶是空的)');
       break;
@@ -226,7 +255,7 @@ async function main() {
         shows_birthday: boolFlag(flags['show-birthday']),
       });
       else if (sub === 'delete') result = await T.deleteVirtualMember(client, { virtual_id: pos[2] });
-      else throw new ApiError(400, 'member add|update|delete <id>');
+      else throw new ApiError(400, 'bad_command', { message: 'member add|update|delete <id>' });
       break;
     }
 
@@ -240,7 +269,7 @@ async function main() {
         memo_id: pos[2], title: flags.title, body: flags.body, pinned: boolFlag(flags.pinned),
       });
       else if (sub === 'delete') result = await T.deleteMemo(client, { memo_id: pos[2] });
-      else throw new ApiError(400, 'memo add|update|delete <id>');
+      else throw new ApiError(400, 'bad_command', { message: 'memo add|update|delete <id>' });
       break;
     }
 
@@ -257,7 +286,7 @@ async function main() {
     case 'comment': {
       const id = pos[1];
       const body = pos.slice(2).join(' ');
-      if (!id || !body) throw new ApiError(400, 'comment <event-id> <文字…>');
+      if (!id || !body) throw new ApiError(400, 'bad_command', { message: 'comment <event-id> <文字…>' });
       result = await T.addComment(client, { event_id: id, body });
       break;
     }
@@ -278,10 +307,10 @@ async function main() {
   else console.log(String(result));
 }
 
-function failId(): never { throw new ApiError(400, 'event_id_required'); }
+function failId(): never { throw new ApiError(400, 'event_id_required', { field: 'event_id', hint: 'show <event-id>' }); }
 
 main().catch((e) => {
-  const status = e instanceof ApiError ? e.status : 1;
-  console.error(JSON.stringify({ error: String(e?.message ?? e), status }));
+  const payload = e instanceof ApiError ? e.toJSON() : { error: String(e?.message ?? e), status: 1 };
+  console.error(JSON.stringify(payload));
   process.exit(1);
 });

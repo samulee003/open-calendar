@@ -2,7 +2,7 @@
 
 自架的共享日曆:家人一起看同一個日曆、標行程、在行程下留言按讚,資料留在自己的機器上。
 零執行期相依需求 —— 只要 Node.js 24+,不需要 `npm install`,不需要資料庫伺服器。
-同時也是一個**給 AI agent 用的日曆**:有 CLI 與 MCP server,29 個工具,token 可分權。
+同時也是一個**給 AI agent 用的日曆**:有 CLI 與 MCP server,33 個工具,token 可分權。
 
 這是 clean-room 實作:功能邊界參考了現有共享日曆產品的公開行為,但程式碼、schema、
 介面文字都是這裡自己寫的,內不含任何第三方產品的原始碼或素材。
@@ -46,6 +46,7 @@ export PATH="/d/rea-toolchain/node-v24.18.0-win-x64:$PATH"
 | 家庭成員 | 沒有帳號的人(小孩、寵物、車…)可建成**虛擬成員**掛在行程上;刪成員會自動清掉標記 |
 | 複製行程 | 複製整筆或重複系列的**某一次**到新時間/另一個日曆,可選帶走重複規則 |
 | 備忘 | 不屬於任何行程的日曆級筆記,可置頂 |
+| 搜尋與詳情 | 標題/備註/地點關鍵字、標籤篩選;`detail=full` 一次帶回備註、提醒與虛擬成員(CLI/MCP) |
 | 誤刪救援 | 刪除是軟刪除;「垃圾桶」列出最近 30 天,可一鍵還原(網頁、CLI、MCP 都有) |
 | 自然語言新增 | 「明天下午3點看牙醫」「每週四 19:00 鋼琴課」;沒把握時先問,不亂猜 |
 | 澳門假期 | 公眾假期與補假查詢(2026–2027 官方表),可問「這天放假嗎」「下一個假期」 |
@@ -122,19 +123,22 @@ node src/cli.ts token create --name qoder-read --scopes read   # 只能查
 ```bash
 # 2) CLI(人也能用;加 --json 給機器讀)
 node src/cli.ts events --from 2026-11-01 --days 30
+node src/cli.ts events --q 鋼琴 --label-id 2 --detail full
 node src/cli.ts add --title "大提琴課" --start "2026-11-05 14:00" --end "2026-11-05 15:00" --reminders 30
 node src/cli.ts quick "明天下午3點看牙醫"
 node src/cli.ts free --date 2026-11-05 --duration 60
 node src/cli.ts dateinfo --date 2026-11-02 --days 30
 node src/cli.ts copy evt_… --shift-days 7
 node src/cli.ts trash  |  restore evt_…  |  restore-occurrence evt_… --occ 2026-11-19
+node src/cli.ts calendar add --name 祖父母  |  calendar invite  |  calendar join CODE
+node src/cli.ts calendar members
 node src/cli.ts members  |  member add --name 李悅 --type child
 node src/cli.ts memos  |  memo add --title 工人放假 --body "到 11 月底"
 node src/cli.ts help            # 完整清單
 ```
 
 ```bash
-# 3) MCP server(stdio,29 個工具)—— 在 agent 的 mcp 設定裡登記
+# 3) MCP server(stdio,33 個工具)—— 在 agent 的 mcp 設定裡登記
 ```
 
 ```json
@@ -151,7 +155,12 @@ node src/cli.ts help            # 完整清單
 
 **重試安全**:`create_event` / `create_events` / `quick_add` / `copy_event` 接受 `request_id`
 (HTTP 也可用 `Idempotency-Key` header)。同 key 重送回傳原本的結果而不是多建一筆;
-同 key 不同內容回 409,不會假裝成功。
+同 key 不同內容回 409,不會假裝成功。`update_event` 只送有變的欄位,可用
+`expected_updated_at` 擋下並行覆蓋(409 `stale_event`)。
+
+MCP 每個工具都宣告 `outputSchema` 與 `annotations`(唯讀/破壞性/冪等),
+回應同時帶 `content` 與 `structuredContent`;清單類工具回 `{ items: [...] }`。
+錯誤是 `{ error, message, status, hint?, field?, required? }`,`hint` 說明下一步。
 
 工具清單、時間語意、錯誤碼該做什麼,都寫在 [AGENTS.md](AGENTS.md)。
 
@@ -168,7 +177,7 @@ bash scripts/check.sh            # 全部七組;NODE=... 可指定 node 執行�
 | `test-rrule.ts` | 重複規則引擎(+8、跨 DST、COUNT、舊錨點) | 30 |
 | `test-import.ts` | CSV 匯入解析器 | 21 |
 | `test-e2e-import.ts` | 真啟動伺服器 + 真 spawn CLI 匯入範例檔 | 14 |
-| `test-agent.ts` | token 生命週期與 scope、冪等重送、垃圾桶還原、29 個工具、CLI 與 MCP 子行程 | 91 |
+| `test-agent.ts` | token 生命週期與 scope、冪等重送、搜尋/詳情、版本衝突、日曆與邀請、33 個工具、CLI 與 MCP 子行程 | 124 |
 | `selftest.ts` | 端對端:鑑權、成員、批次、重複、例外、留言、按讚、ICS 結構、資安標頭 | 90 |
 
 這些測試**真的啟動伺服器、真的跑子行程**,不是把函式 mock 起來。

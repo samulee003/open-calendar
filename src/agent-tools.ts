@@ -9,8 +9,8 @@ import { COVERAGE, holidayOn, holidaysBetween, isCovered, weekdayOf } from './ho
 const DAY = 86400000;
 export type Args = Record<string, any>;
 
-function fail(message: string): never {
-  throw new ApiError(400, message);
+function fail(code: string, extra: { message?: string; hint?: string; field?: string } = {}): never {
+  throw new ApiError(400, code, extra);
 }
 
 function compact<T extends Record<string, any>>(o: T): T {
@@ -25,17 +25,25 @@ function compact<T extends Record<string, any>>(o: T): T {
 export function parseWhen(value: unknown, tz: string): number {
   if (typeof value === 'number' && Number.isFinite(value)) return normaliseEpoch(value);
   const s = String(value ?? '').trim();
-  if (!s) fail('time_required');
+  if (!s) fail('time_required', { field: 'start', hint: 'pass epoch ms from list_events, or "YYYY-MM-DD HH:MM"' });
   if (/^\d{9,}$/.test(s)) return normaliseEpoch(Number(s));
   const naive = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/.exec(s);
   if (naive) {
     const [, y, mo, d, hh, mi, ss] = naive;
     return wallToUtc(+y, +mo, +d, +(hh ?? 0), +(mi ?? 0), +(ss ?? 0), tz);
   }
-  if (/\(all-day\)/.test(s)) fail(`bad_time: ${s} — pass the epoch from list_events instead`);
+  if (/\(all-day\)/.test(s)) {
+    fail('bad_time', {
+      message: `bad_time: ${s}`,
+      hint: 'that is a display label; pass the epoch from list_events instead',
+    });
+  }
   const t = Date.parse(s);
   if (Number.isFinite(t)) return t;
-  return fail(`bad_time: ${s}`);
+  return fail('bad_time', {
+    message: `bad_time: ${s}`,
+    hint: 'pass epoch ms from list_events, or "YYYY-MM-DD HH:MM"',
+  });
 }
 
 // A 10-digit value is Unix seconds; reading it as milliseconds lands in 1970.
@@ -59,11 +67,15 @@ export async function tzOf(c: Client, args: Args = {}): Promise<string> {
 
 export function resolveCal(c: Client, args: Args = {}): string {
   const id = args.calendar_id ?? args.calendar ?? c.calendar;
-  if (!id) fail('calendar_id_required (or set a default with `use` / CAL_CALENDAR)');
+  if (!id) fail('calendar_id_required', {
+    hint: 'pass calendar_id or set a default with `use` / CAL_CALENDAR',
+    field: 'calendar_id',
+  });
   return String(id);
 }
 
-function shapeOccurrence(o: any, tz: string) {
+function shapeOccurrence(o: any, tz: string, detail: 'summary' | 'full' = 'summary') {
+  const full = detail === 'full';
   return compact({
     id: String(o.id),
     occurrence_start: Number(o.occurrence_start),
@@ -77,7 +89,16 @@ function shapeOccurrence(o: any, tz: string) {
     end: o.all_day ? undefined : localLabel(Number(o.end_at), tz, false),
     rrule: o.rrule ? String(o.rrule) : undefined,
     label: o.label_name ? String(o.label_name) : undefined,
+    label_id: full && o.label_id != null ? Number(o.label_id) : undefined,
     location: o.location ? String(o.location) : undefined,
+    note: full && o.note ? String(o.note) : undefined,
+    reminders: full ? (o.reminders ?? []).map(Number) : undefined,
+    virtual_attendees: full
+      ? (o.virtual_attendees ?? []).map((v: any) => ({
+        id: String(v.id), name: String(v.name), account_type: String(v.account_type),
+      }))
+      : undefined,
+    overridden: full && o.overridden ? true : undefined,
     comment_count: Number(o.comment_count) || undefined,
   });
 }
@@ -90,10 +111,43 @@ export async function whoami(c: Client) {
 
 export async function listCalendars(c: Client) {
   const rows = await c.call<any[]>('GET', '/api/calendars');
-  return rows.map((r) => compact({
-    id: String(r.id), name: String(r.name), role: String(r.role),
-    member_count: Number(r.member_count), default: String(r.id) === c.calendar ? true : undefined,
-  }));
+  return {
+    items: rows.map((r) => compact({
+      id: String(r.id), name: String(r.name), role: String(r.role),
+      member_count: Number(r.member_count), default: String(r.id) === c.calendar ? true : undefined,
+    })),
+  };
+}
+
+export async function createCalendar(c: Client, args: Args = {}) {
+  const name = String(args.name ?? '').trim();
+  if (!name) fail('name_required', { field: 'name' });
+  const r = await c.call<{ id: string }>('POST', '/api/calendars', {
+    body: compact({ name, color: args.color }),
+  });
+  return { created: r.id, name, calendar_id: r.id };
+}
+
+export async function listMembers(c: Client, args: Args = {}) {
+  const cal = resolveCal(c, args);
+  const rows = await c.call<any[]>('GET', `/api/calendars/${encodeURIComponent(cal)}/members`);
+  return {
+    calendar_id: cal,
+    items: rows.map((r) => ({ id: String(r.id), name: String(r.name), role: String(r.role) })),
+  };
+}
+
+export async function createInvite(c: Client, args: Args = {}) {
+  const cal = resolveCal(c, args);
+  const r = await c.call<{ code: string }>('POST', `/api/calendars/${encodeURIComponent(cal)}/invite`);
+  return { calendar_id: cal, code: r.code, hint: 'share the code; the other account calls join_calendar with it' };
+}
+
+export async function joinCalendar(c: Client, args: Args = {}) {
+  const code = String(args.code ?? '').trim().toUpperCase();
+  if (!code) fail('code_required', { field: 'code', hint: 'use the code from create_invite' });
+  const r = await c.call<{ calendar_id: string }>('POST', '/api/join', { body: { code } });
+  return { joined: true, calendar_id: r.calendar_id };
 }
 
 export async function listEvents(c: Client, args: Args = {}) {
@@ -104,10 +158,27 @@ export async function listEvents(c: Client, args: Args = {}) {
   const to = args.to !== undefined ? parseWhen(args.to, tz) : from + days * DAY;
   const cal = args.calendar_id ?? args.calendar ?? c.calendar;
   const path = cal ? `/api/calendars/${encodeURIComponent(String(cal))}/events` : '/api/events';
-  const rows = await c.call<any[]>('GET', path, { query: { from, to } });
+  const detail: 'summary' | 'full' = args.detail === 'full' ? 'full' : 'summary';
+  const rows = await c.call<any[]>('GET', path, {
+    query: { from, to, detail: detail === 'full' ? 'full' : undefined },
+  });
+  // Filtering happens after recurrence expansion, so `q` also matches occurrences
+  // of a series and overridden titles; `note` is only searched when it is loaded.
+  const q = String(args.q ?? '').trim().toLowerCase();
+  let labelId: number | null = null;
+  if (args.label_id !== undefined && args.label_id !== null && args.label_id !== '') {
+    labelId = Number(args.label_id);
+    if (!Number.isFinite(labelId)) fail('bad_label_id', { field: 'label_id', hint: 'see list_labels' });
+  }
+  const matched = rows.filter((o) => {
+    if (labelId !== null && Number(o.label_id) !== labelId) return false;
+    if (!q) return true;
+    return [o.title, o.note, o.location].some((v) => String(v ?? '').toLowerCase().includes(q));
+  });
   return {
-    tz, from: localLabel(from, tz, false), to: localLabel(to, tz, false), count: rows.length,
-    events: rows.map((o) => shapeOccurrence(o, tz)),
+    tz, from: localLabel(from, tz, false), to: localLabel(to, tz, false),
+    detail, count: matched.length,
+    events: matched.map((o) => shapeOccurrence(o, tz, detail)),
   };
 }
 
@@ -127,6 +198,8 @@ export async function getEvent(c: Client, args: Args) {
       location: e.location ? String(e.location) : undefined,
       rrule: e.rrule ? String(e.rrule) : undefined,
       label_id: e.label_id == null ? undefined : Number(e.label_id),
+      // Feed this back as expected_updated_at to detect a concurrent edit.
+      updated_at: Number(e.updated_at) || undefined,
     }),
     reminders: (r.reminders ?? []).map((x: any) => Number(x.minutes)),
     virtual_attendees: (r.virtual_attendees ?? []).map((x: any) => ({
@@ -142,13 +215,15 @@ export async function getEvent(c: Client, args: Args) {
 
 function eventPayload(c: Client, args: Args, tz: string) {
   const title = String(args.title ?? '').trim();
-  if (!title) fail('title_required');
+  if (!title) fail('title_required', { field: 'title' });
   const allDay = args.all_day === true || args.all_day === 1;
   let start_at: number;
   if (allDay) {
     start_at = parseWhen(args.date ?? args.start, tz);
   } else {
-    if (args.start === undefined) fail('start_required (or all_day with date)');
+    if (args.start === undefined) {
+      fail('start_required', { field: 'start', hint: 'or pass all_day=true with date' });
+    }
     start_at = parseWhen(args.start, tz);
   }
   const payload: Args = {
@@ -181,7 +256,7 @@ export async function createEvents(c: Client, args: Args) {
   const tz = await tzOf(c, args);
   const cal = resolveCal(c, args);
   const list = args.events;
-  if (!Array.isArray(list) || !list.length) fail('events_required');
+  if (!Array.isArray(list) || !list.length) fail('events_required', { field: 'events' });
   // Entries that fail local normalization are passed through raw so the server
   // rejects them at their real index — batch results stay index-aligned.
   const body = {
@@ -207,13 +282,16 @@ export async function updateEvent(c: Client, args: Args) {
   const existing = await c.call<any>('GET', `/api/events/${encodeURIComponent(id)}`);
   const e = existing.event;
   const tz = isValidZone(args.tz) ? String(args.tz) : (isValidZone(e.tz) ? String(e.tz) : await tzOf(c));
-  const body: Args = { reminders: (existing.reminders ?? []).map((x: any) => Number(x.minutes)) };
+  // Send only what the caller changed. The server keeps omitted fields (including
+  // reminders), so a stale read can no longer clobber a concurrent edit.
+  const body: Args = {};
   for (const f of ['title', 'note', 'location', 'rrule', 'label_id']) {
     if (args[f] !== undefined) body[f] = args[f];
   }
   if (args.all_day !== undefined) body.all_day = args.all_day === true || args.all_day === 1;
   if (args.reminders !== undefined) body.reminders = args.reminders;
   if (args.virtual_attendees !== undefined) body.virtual_attendees = args.virtual_attendees;
+  if (args.expected_updated_at !== undefined) body.expected_updated_at = args.expected_updated_at;
   const allDay = body.all_day ?? Number(e.all_day) === 1;
   if (allDay && args.date !== undefined) body.start_at = parseWhen(args.date, tz);
   if (args.start !== undefined) body.start_at = parseWhen(args.start, tz);
@@ -225,7 +303,9 @@ export async function updateEvent(c: Client, args: Args) {
 export async function deleteEvent(c: Client, args: Args) {
   const id = String(args.event_id ?? args.id ?? fail('event_id_required'));
   const scope = String(args.scope ?? 'all');
-  if (!['all', 'future', 'occurrence'].includes(scope)) fail('bad_scope (all|future|occurrence)');
+  if (!['all', 'future', 'occurrence'].includes(scope)) {
+    fail('bad_scope', { field: 'scope', hint: 'all | future | occurrence' });
+  }
   const occ = args.occurrence_start !== undefined ? parseWhen(args.occurrence_start, await tzOf(c)) : null;
   return c.call('DELETE', `/api/events/${encodeURIComponent(id)}`, { query: { scope, occ } });
 }
@@ -234,16 +314,18 @@ export async function deleteEvent(c: Client, args: Args) {
 export async function listTrash(c: Client, args: Args = {}) {
   const tz = await tzOf(c, args);
   const rows = await c.call<any[]>('GET', '/api/trash', { query: { days: args.days ?? 30 } });
-  return rows.map((r) => {
-    const eventTz = isValidZone(r.tz) ? String(r.tz) : tz;
-    return compact({
-      id: String(r.id), calendar_id: String(r.calendar_id), calendar: String(r.calendar_name),
-      title: String(r.title),
-      start: localLabel(Number(r.start_at), eventTz, Number(r.all_day) === 1),
-      rrule: r.rrule ? String(r.rrule) : undefined,
-      deleted: localLabel(Number(r.deleted_at), tz, false),
-    });
-  });
+  return {
+    items: rows.map((r) => {
+      const eventTz = isValidZone(r.tz) ? String(r.tz) : tz;
+      return compact({
+        id: String(r.id), calendar_id: String(r.calendar_id), calendar: String(r.calendar_name),
+        title: String(r.title),
+        start: localLabel(Number(r.start_at), eventTz, Number(r.all_day) === 1),
+        rrule: r.rrule ? String(r.rrule) : undefined,
+        deleted: localLabel(Number(r.deleted_at), tz, false),
+      });
+    }),
+  };
 }
 
 export async function restoreEvent(c: Client, args: Args) {
@@ -269,7 +351,10 @@ export async function overrideOccurrence(c: Client, args: Args) {
   // stored, never shown, and reported as success. Check it exists first.
   const day = await listEvents(c, { calendar_id: String(e.event.calendar_id), from: occ - DAY, to: occ + DAY, tz });
   if (!day.events.some((x: any) => x.id === id && Number(x.occurrence_start) === occ)) {
-    fail(`occurrence_not_found: ${localLabel(occ, tz, false)} is not an occurrence of ${id} in this window`);
+    fail('occurrence_not_found', {
+      message: `occurrence_not_found: ${localLabel(occ, tz, false)} is not an occurrence of ${id} in this window`,
+      hint: 'pass the occurrence_start epoch reported by list_events',
+    });
   }
   const body = compact({
     occurrence_start: occ,
@@ -288,7 +373,7 @@ export async function findFreeSlots(c: Client, args: Args) {
   const tz = await tzOf(c, args);
   const date = String(args.date ?? '').trim();
   const dm = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
-  if (!dm) fail('date_required (YYYY-MM-DD)');
+  if (!dm) fail('date_required', { field: 'date', hint: 'pass YYYY-MM-DD' });
   const duration = Math.max(5, Number(args.duration_minutes ?? 60));
   const [wsH, wsM] = String(args.window_start ?? '08:00').split(':').map(Number);
   const [weH, weM] = String(args.window_end ?? '22:00').split(':').map(Number);
@@ -335,7 +420,8 @@ export async function createSubscription(c: Client, args: Args) {
 
 export async function listSubscriptions(c: Client, args: Args) {
   const cal = resolveCal(c, args);
-  return c.call('GET', `/api/calendars/${encodeURIComponent(cal)}/subscriptions`);
+  const rows = await c.call<any[]>('GET', `/api/calendars/${encodeURIComponent(cal)}/subscriptions`);
+  return { calendar_id: cal, items: rows };
 }
 
 export async function revokeSubscription(c: Client, args: Args) {
@@ -345,7 +431,8 @@ export async function revokeSubscription(c: Client, args: Args) {
 
 export async function listLabels(c: Client, args: Args) {
   const cal = resolveCal(c, args);
-  return c.call('GET', `/api/calendars/${encodeURIComponent(cal)}/labels`);
+  const rows = await c.call<any[]>('GET', `/api/calendars/${encodeURIComponent(cal)}/labels`);
+  return { calendar_id: cal, items: rows };
 }
 
 // Copy one event, or one occurrence of a recurring series, to a new time or calendar.
@@ -403,7 +490,8 @@ export async function copyEvent(c: Client, args: Args) {
 
 export async function listVirtualMembers(c: Client, args: Args = {}) {
   const cal = resolveCal(c, args);
-  return c.call('GET', `/api/calendars/${encodeURIComponent(cal)}/virtual-members`);
+  const rows = await c.call<any[]>('GET', `/api/calendars/${encodeURIComponent(cal)}/virtual-members`);
+  return { calendar_id: cal, items: rows };
 }
 
 export async function createVirtualMember(c: Client, args: Args) {
@@ -436,7 +524,8 @@ export async function deleteVirtualMember(c: Client, args: Args) {
 // ---------- memos ----------
 export async function listMemos(c: Client, args: Args = {}) {
   const cal = resolveCal(c, args);
-  return c.call('GET', `/api/calendars/${encodeURIComponent(cal)}/memos`);
+  const rows = await c.call<any[]>('GET', `/api/calendars/${encodeURIComponent(cal)}/memos`);
+  return { calendar_id: cal, items: rows };
 }
 
 export async function createMemo(c: Client, args: Args) {

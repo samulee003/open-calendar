@@ -28,7 +28,12 @@ const LOGIN_MAX_PER_IP = 30;
 
 class HttpError extends Error {
   status: number;
-  constructor(status: number, message: string) { super(message); this.status = status; }
+  // Extra machine-readable facts (required scope, stale field…) travel next to
+  // `error` so an agent can act without parsing prose.
+  details: Record<string, unknown>;
+  constructor(status: number, message: string, details: Record<string, unknown> = {}) {
+    super(message); this.status = status; this.details = details;
+  }
 }
 export { HttpError };
 
@@ -115,6 +120,10 @@ function intOrNull(v: unknown): number | null {
   if (v === undefined || v === null || v === '') return null;
   const n = Number(v);
   return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+
+function detailOf(ctx: Ctx): 'summary' | 'full' {
+  return ctx.query.get('detail') === 'full' ? 'full' : 'summary';
 }
 
 type EventInput = {
@@ -208,7 +217,8 @@ function insertEvent(ctx: Ctx, calendarId: string, ev: EventInput, userId: strin
 }
 
 /** Expand stored events into concrete occurrences, applying per-occurrence overrides. */
-function occurrences(ctx: Ctx, calendarIds: string[], from: number, to: number): Row[] {
+function occurrences(ctx: Ctx, calendarIds: string[], from: number, to: number,
+  detail: 'summary' | 'full' = 'summary'): Row[] {
   if (!calendarIds.length) return [];
   const ph = calendarIds.map(() => '?').join(',');
   const rows = ctx.store.all(
@@ -255,6 +265,35 @@ function occurrences(ctx: Ctx, calendarIds: string[], from: number, to: number):
         created_by: String(e.created_by),
         comment_count: Number(cmts?.n ?? 0),
       } as unknown as Row);
+    }
+  }
+  // `detail=full` attaches the per-event facts an agent would otherwise fetch
+  // event by event. Two bulk queries keep the cost independent of event count.
+  if (detail === 'full' && out.length) {
+    const ids = [...new Set(out.map((r) => String(r.id)))];
+    const alarms = new Map<string, number[]>();
+    const tagged = new Map<string, Row[]>();
+    for (let i = 0; i < ids.length; i += 400) {
+      const slice = ids.slice(i, i + 400);
+      const ph = slice.map(() => '?').join(',');
+      for (const r of ctx.store.all(
+        `select event_id, minutes from reminders where event_id in (${ph}) order by minutes`, ...slice)) {
+        const key = String(r.event_id);
+        alarms.set(key, [...(alarms.get(key) ?? []), Number(r.minutes)]);
+      }
+      for (const v of ctx.store.all(
+        `select va.event_id, v.id, v.name, v.account_type, v.color from virtual_attendees va
+         join virtual_members v on v.id = va.virtual_id where va.event_id in (${ph}) order by v.name`, ...slice)) {
+        const key = String(v.event_id);
+        tagged.set(key, [...(tagged.get(key) ?? []), {
+          id: String(v.id), name: String(v.name), account_type: String(v.account_type),
+          color: v.color == null ? null : String(v.color),
+        } as unknown as Row]);
+      }
+    }
+    for (const r of out) {
+      r.reminders = alarms.get(String(r.id)) ?? [];
+      r.virtual_attendees = tagged.get(String(r.id)) ?? [];
     }
   }
   out.sort((a: any, b: any) => a.start_at - b.start_at);
@@ -557,7 +596,7 @@ export const routes = {
     mustView(ctx, ctx.params.id);
     const from = intOrNull(ctx.query.get('from')) ?? Date.now();
     const to = intOrNull(ctx.query.get('to')) ?? from + 31 * DAY;
-    return occurrences(ctx, [ctx.params.id], from, to);
+    return occurrences(ctx, [ctx.params.id], from, to, detailOf(ctx));
   },
 
   'GET /api/events': (ctx: Ctx) => {
@@ -565,7 +604,7 @@ export const routes = {
     const cals = ctx.store.all('select calendar_id from members where user_id = ?', String(u.id)).map((r) => String(r.calendar_id));
     const from = intOrNull(ctx.query.get('from')) ?? Date.now();
     const to = intOrNull(ctx.query.get('to')) ?? from + 31 * DAY;
-    return occurrences(ctx, cals, from, to);
+    return occurrences(ctx, cals, from, to, detailOf(ctx));
   },
 
   'POST /api/calendars/:id/events': (ctx: Ctx) => {
@@ -633,6 +672,18 @@ export const routes = {
     const e = ctx.store.get('select * from events where id = ?', ctx.params.id);
     if (!e) throw new HttpError(404, 'no_such_event');
     mustView(ctx, String(e.calendar_id));
+    // Optimistic concurrency: a caller that read the event earlier can refuse to
+    // overwrite a change it never saw.
+    const expected = intOrNull(ctx.body?.expected_updated_at);
+    if (expected !== null && expected !== Number(e.updated_at)) {
+      throw new HttpError(409, 'stale_event', {
+        expected_updated_at: expected, updated_at: Number(e.updated_at),
+      });
+    }
+    // Omitting reminders must not silently clear them; same rule the agent layer
+    // needs for a partial update.
+    const existingReminders = ctx.store.all('select minutes from reminders where event_id = ?', ctx.params.id)
+      .map((r) => Number(r.minutes));
     const ev = normalizeEvent({
       title: ctx.body?.title ?? e.title,
       note: ctx.body?.note ?? e.note,
@@ -642,14 +693,15 @@ export const routes = {
       end_at: ctx.body?.end_at ?? e.end_at,
       label_id: ctx.body?.label_id !== undefined ? ctx.body.label_id : e.label_id,
       rrule: ctx.body?.rrule !== undefined ? ctx.body.rrule : e.rrule,
-      reminders: ctx.body?.reminders ?? [],
+      reminders: ctx.body?.reminders !== undefined ? ctx.body.reminders : existingReminders,
       attendees: ctx.body?.attendees ?? [],
       tz: ctx.body?.tz ?? e.tz,
     }, String(e.tz ?? 'UTC'));
+    const nextUpdatedAt = Math.max(Date.now(), Number(e.updated_at ?? 0) + 1);
     ctx.store.run(
       `update events set title=?, note=?, location=?, all_day=?, start_at=?, end_at=?, label_id=?, rrule=?, updated_at=?
        where id=?`, ev.title, ev.note, ev.location, ev.allDay ? 1 : 0, ev.start_at, ev.end_at,
-      ev.label_id, ev.rrule, Date.now(), ctx.params.id);
+      ev.label_id, ev.rrule, nextUpdatedAt, ctx.params.id);
     ctx.store.run('delete from reminders where event_id = ?', ctx.params.id);
     for (const m of ev.reminders) ctx.store.run('insert or ignore into reminders (event_id, minutes) values (?,?)', ctx.params.id, m);
     // Omitted virtual_attendees leaves the existing ones alone (same rule as notes).
