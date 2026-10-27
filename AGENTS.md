@@ -183,6 +183,24 @@ node --experimental-strip-types ...   # 不需要,Node 24 直接跑 .ts
 系統若只有 Node 22.17,`.ts` 會報 `ERR_UNKNOWN_FILE_EXTENSION` —— 這是環境問題,不是程式 bug,
 改用 `scripts/check.sh` 加 `NODE=`。
 
+## 重啟執行中的實例(改完程式碼才會生效)
+
+沒有 build,伺服器直接跑 `.ts`,所以**改了程式碼,執行中的實例仍然是舊的**。
+`start-server.cmd` 設定 `PORT` 與 `DATA_DIR` 並把 node 拉起來,`start-server.vbs` 是它的無視窗包裝
+(把它複製到「啟動」資料夾就能開機自動跑,不需要系統管理員權限)。
+
+```bash
+netstat -ano | grep ":8790 .*LISTENING"     # 找出 node 的 PID
+taskkill //F //PID <pid> //T                 # 無視窗行程收不到 graceful 關閉,必須 /F
+powershell -NoProfile -Command "Start-Process wscript.exe -ArgumentList 'start-server.vbs' -WindowStyle Hidden"
+```
+
+- SQLite 用 WAL,強殺後下次開啟會自動 recovery,不會把資料庫弄壞。
+- **重啟 HTTP 伺服器 ≠ agent 的工具更新了**。MCP adapter 是另一個行程,要讓 host 重新 spawn
+  它(Qoder 是 connector 的 retry / 重啟),新工具與新 schema 才會出現在 agent 面前。
+- 重啟後先做唯讀驗證(`whoami`、`list_calendars`、`list_events`)再碰正式資料。
+  要驗 `stale_event` 就故意送一個舊的 `expected_updated_at`:它在寫入前就被擋掉,不會動到資料。
+
 ## 架構與所有權
 
 ```
@@ -227,6 +245,14 @@ public/app.js  ──►  src/server.ts  ──►  src/api.ts(路由=唯一驗�
 - **久跑的 SPA/伺服器分頁**:背景分頁的 timer 會被凍結(瀏覽器驗證時)。
 - **`new URL(path, base)` 會吃掉 base 的子路徑**;拼完整 URL 時用字串串接(見 `createSubscription`)。
 - 多個行程共用同一個 SQLite:伺服器 + CLI + MCP 同時寫會碰鎖,寫入保持短小事務。
+- **MCP host 的 schema 是快照**:connector 重生之後伺服器已經是新版(回傳的新欄位看得到),
+  但 host 仍握著連線當下抓到的 `inputSchema`,於是新參數會被 host 自己擋掉
+  (`params must NOT have additional properties`),跟伺服器無關。要證明參數真的可用,
+  自己 spawn 一個 `node src/mcp.ts` 走 stdio 驗,不要把 host 的錯誤當成程式 bug。
+- **`~` 在 Git Bash 不等於使用者家目錄**:`src/client.ts` 是用 `os.homedir()` 找
+  `.shared-calendar-agent.json`,而 Git Bash 的 `~` 可能被設到別處(見過 `HOME=/h/`)。
+  `ls ~/.shared-calendar-agent.json` 找不到不代表檔案不存在 —— 用 `%USERPROFILE%` 或
+  `node -e "console.log(require('node:os').homedir())"` 確認。
 
 ## 驗證清單(提交前)
 
