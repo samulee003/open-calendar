@@ -58,6 +58,7 @@ const USAGE = `shared-calendar agent CLI
   memo delete <id>
 
 時間格式: epoch 毫秒、ISO 8601、YYYY-MM-DD、"YYYY-MM-DD HH:MM"（無時區資訊時以 --tz／帳號時區解讀）
+冪等: add / quick / batch / copy 可帶 --request-id KEY，同 key 重送會回原結果，不會重複建立
 全域 flags: --base URL --token TOKEN --tz Z --json`;
 
 type Parsed = { pos: string[]; flags: Record<string, string | boolean> };
@@ -204,14 +205,14 @@ async function main() {
     case 'quick': {
       const text = pos.slice(1).join(' ');
       if (!text) throw new ApiError(400, 'text_required', { hint: 'quick "明天下午3點看牙醫"' });
-      result = await T.quickAdd(client, { text, confirm: flags.confirm === true, calendar_id: flags.calendar, tz: flags.tz });
+      result = await T.quickAdd(client, { text, confirm: flags.confirm === true, calendar_id: flags.calendar, tz: flags.tz, request_id: flags['request-id'] });
       break;
     }
 
     case 'batch': {
       const file = typeof flags.file === 'string' ? flags.file : null;
       const raw = file ? readFileSync(file, 'utf8') : readFileSync(0, 'utf8');
-      result = await T.createEvents(client, { events: JSON.parse(raw), calendar_id: flags.calendar, tz: flags.tz });
+      result = await T.createEvents(client, { events: JSON.parse(raw), calendar_id: flags.calendar, tz: flags.tz, request_id: flags['request-id'] });
       break;
     }
 

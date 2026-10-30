@@ -68,5 +68,18 @@ ok('title keeps unknown words', (() => { const r = p('明天 15:00 到學校接�
 ok('fullwidth digits and colon', (() => { const r = p('明天　１５：００　開會'); return hm(r.start_at) === '15:00' && r.title === '開會'; })(), JSON.stringify(p('明天　１５：００　開會')));
 ok('no space between date and time', (() => { const r = p('明天15:00開會'); return day(r.start_at) === '2026-10-24' && hm(r.start_at) === '15:00'; })(), JSON.stringify(p('明天15:00開會')));
 
+// ---- same-day phrases stay today (regression: a zone-mixed compare used to roll them) ----
+ok('same-day 10月23日 does not roll to next year', (() => { const r = p('10月23日 上午9點 打掃'); return day(r.start_at) === '2026-10-23' && hm(r.start_at) === '09:00'; })(), JSON.stringify(p('10月23日 上午9點 打掃')));
+ok('這週五 said on Friday stays today', (() => { const r = p('這週五 15:00 收尾'); return day(r.start_at) === '2026-10-23' && hm(r.start_at) === '15:00'; })(), JSON.stringify(p('這週五 15:00 收尾')));
+
+// ---- explicit timezone anchoring (absolute epochs, machine-independent) ----
+const tp = (s: string, nowMs: number, tz: string) => parseQuickAdd(s, { now: new Date(nowMs), tz });
+// 2026-11-05 01:00Z is 09:00 in Taipei and 2026-11-04 21:00 in New York.
+ok('tz: 明天 15:00 in Asia/Taipei is 07:00Z next day', (() => { const r = tp('明天 下午3點 看牙醫', Date.UTC(2026, 10, 5, 1, 0), 'Asia/Taipei'); return r.start_at === Date.UTC(2026, 10, 6, 7, 0) && r.confidence === 'high'; })(), JSON.stringify(tp('明天 下午3點 看牙醫', Date.UTC(2026, 10, 5, 1, 0), 'Asia/Taipei')));
+ok('tz: the same sentence in New York lands on a different date', (() => { const r = tp('明天 下午3點 看牙醫', Date.UTC(2026, 10, 5, 1, 0), 'America/New_York'); return r.start_at === Date.UTC(2026, 10, 5, 20, 0); })(), JSON.stringify(tp('明天 下午3點 看牙醫', Date.UTC(2026, 10, 5, 1, 0), 'America/New_York')));
+ok('tz: same-day M月D日 does not roll to next year', (() => { const r = tp('11月5日 上午9點 測試', Date.UTC(2026, 10, 5, 1, 0), 'Asia/Taipei'); return r.start_at === Date.UTC(2026, 10, 5, 1, 0); })(), JSON.stringify(tp('11月5日 上午9點 測試', Date.UTC(2026, 10, 5, 1, 0), 'Asia/Taipei')));
+ok('tz: 這週三 on the Wednesday itself stays today', (() => { const r = tp('這週三 下午3點 會議', Date.UTC(2026, 10, 4, 9, 0), 'Asia/Taipei'); return r.start_at === Date.UTC(2026, 10, 4, 7, 0); })(), JSON.stringify(tp('這週三 下午3點 會議', Date.UTC(2026, 10, 4, 9, 0), 'Asia/Taipei')));
+ok('tz: 每週四 anchors on Thursday in that zone', (() => { const r = tp('每週四 19:00 鋼琴課', Date.UTC(2026, 10, 4, 9, 0), 'America/New_York'); return r.rrule === 'RRULE:FREQ=WEEKLY;BYDAY=TH' && r.start_at === Date.UTC(2026, 10, 6, 0, 0); })(), JSON.stringify(tp('每週四 19:00 鋼琴課', Date.UTC(2026, 10, 4, 9, 0), 'America/New_York')));
+
 console.log(fail ? `\n${fail} FAILED of ${pass + fail}` : `\n${pass} passed`);
 process.exitCode = fail ? 1 : 0;

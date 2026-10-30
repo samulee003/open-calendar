@@ -41,18 +41,18 @@ export PATH="/d/rea-toolchain/node-v24.18.0-win-x64:$PATH"
 |---|---|
 | 多日曆與成員 | 邀請碼加入;同日曆的人看得到同一份行程、留言、按讚 |
 | 行程 | 標題、時間或全天、地點、備註、標籤、通知(開始前 N 分鐘) |
-| 重複 | RFC 5545 `RRULE` 子集:`DAILY/WEEKLY/MONTHLY/YEARLY`、`INTERVAL`、`BYDAY`、`BYMONTHDAY`(含 `-1`)、`BYMONTH`、`COUNT`、`UNTIL` |
+| 重複 | RFC 5545 `RRULE` 子集:`DAILY/WEEKLY/MONTHLY/YEARLY`、`INTERVAL`、`BYDAY`、`BYMONTHDAY`(含 `-1`)、`BYMONTH`、`COUNT`、`UNTIL`;無法忠實展開的屬性(`BYSETPOS`、`WKST`、`YEARLY` 的 `BYDAY` 等)會被**明確拒絕**(`bad_rrule`),不是靜默忽略 |
 | 單次例外 | 「只改這一次」寫 override;「只刪這一次」寫 `EXDATE`;「刪這天以後」改寫 `UNTIL` |
 | 家庭成員 | 沒有帳號的人(小孩、寵物、車…)可建成**虛擬成員**掛在行程上;刪成員會自動清掉標記 |
 | 複製行程 | 複製整筆或重複系列的**某一次**到新時間/另一個日曆,可選帶走重複規則 |
 | 備忘 | 不屬於任何行程的日曆級筆記,可置頂 |
 | 搜尋與詳情 | 標題/備註/地點關鍵字、標籤篩選;`detail=full` 一次帶回備註、提醒與虛擬成員(CLI/MCP) |
 | 誤刪救援 | 刪除是軟刪除;「垃圾桶」列出最近 30 天,可一鍵還原(網頁、CLI、MCP 都有) |
-| 自然語言新增 | 「明天下午3點看牙醫」「每週四 19:00 鋼琴課」;沒把握時先問,不亂猜 |
+| 自然語言新增 | 「明天下午3點看牙醫」「每週四 19:00 鋼琴課」,以**使用者時區**解讀(與伺服器時區無關);沒把握時先問,不亂猜 |
 | 澳門假期 | 公眾假期與補假查詢(2026–2027 官方表),可問「這天放假嗎」「下一個假期」 |
 | 批次匯入 | 一次 500 筆;網頁貼一行一筆,或 CLI 讀 CSV |
 | 手機同步 | 每個日曆可產生**唯讀 ICS 訂閱網址**,並帶 `VALARM` 讓手機自己響鈴 |
-| 時區 | 依 IANA 時區名在**當地牆上時間**展開重複;ICS 輸出帶 `TZID` + `VTIMEZONE`,不會把手機上的星期算錯一天 |
+| 時區 | 依 IANA 時區名在**當地牆上時間**展開重複,自然語言新增也以使用者時區解讀;ICS 輸出帶 `TZID` + `VTIMEZONE`,不會把手機上的星期算錯一天 |
 
 ### 目前刻意沒做的
 
@@ -154,7 +154,8 @@ node src/cli.ts help            # 完整清單
 ```
 
 **重試安全**:`create_event` / `create_events` / `quick_add` / `copy_event` 接受 `request_id`
-(HTTP 也可用 `Idempotency-Key` header)。同 key 重送回傳原本的結果而不是多建一筆;
+(HTTP 也可用 `Idempotency-Key` header),CLI 對應 `add`/`quick`/`batch`/`copy` 的 `--request-id`。
+同 key 重送回傳原本的結果而不是多建一筆;
 同 key 不同內容回 409,不會假裝成功。`update_event` 只送有變的欄位,可用
 `expected_updated_at` 擋下並行覆蓋(409 `stale_event`)。
 
@@ -172,13 +173,13 @@ bash scripts/check.sh            # 全部七組;NODE=... 可指定 node 執行�
 
 | 程式 | 驗什麼 | 斷言 |
 |---|---|---|
-| `test-nlp.ts` | 中文自然語言解析(quick add) | 27 |
+| `test-nlp.ts` | 中文自然語言解析(quick add;時區錨定、同日不滾位) | 34 |
 | `test-holidays.ts` | 澳門假期表完整性與 `get_date_info` 語意 | 29 |
-| `test-rrule.ts` | 重複規則引擎(+8、跨 DST、COUNT、舊錨點) | 30 |
+| `test-rrule.ts` | 重複規則引擎(+8、跨 DST、COUNT、舊錨點、不支援屬性拒絕) | 42 |
 | `test-import.ts` | CSV 匯入解析器 | 21 |
 | `test-e2e-import.ts` | 真啟動伺服器 + 真 spawn CLI 匯入範例檔 | 14 |
-| `test-agent.ts` | token 生命週期與 scope、冪等重送、搜尋/詳情、版本衝突、日曆與邀請、33 個工具、CLI 與 MCP 子行程 | 124 |
-| `selftest.ts` | 端對端:鑑權、成員、批次、重複、例外、留言、按讚、ICS 結構、資安標頭 | 90 |
+| `test-agent.ts` | token 生命週期與 scope、冪等重送、搜尋/詳情、版本衝突、日曆與邀請、33 個工具、CLI 與 MCP 子行程 | 126 |
+| `selftest.ts` | 端對端:鑑權、成員、批次、重複、例外、留言、按讚、ICS 結構、色彩驗證、資安標頭 | 100 |
 
 這些測試**真的啟動伺服器、真的跑子行程**,不是把函式 mock 起來。
 `npm test` / `npm start` 只有 PATH 上的 `node` 是 24+ 時會通,否則請用 `scripts/check.sh`。
@@ -220,6 +221,8 @@ db.prepare('vacuum into ?').run('backup-'+new Date().toISOString().slice(0,10)+'
   `X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`。
 - 前端所有文字一律走 `textContent`;行程標題與備註(由**其他家庭成員**撰寫)永遠不會變成 markup。
 - ICS 輸出會轉義 `\`、`\r`、`\n`、`;`、`,`,標題偽造不出 `DESCRIPTION:` 之類的屬性行(有測試)。
+- 日曆/標籤/虛擬成員的顏色欄只接受 `#RGB`–`#RRGGBBAA` 十六進位字面值——顏色會插進網頁的
+  style 屬性,放寬就等於讓家人互相注入 CSS(有測試)。
 - 靜態檔帶 `no-cache`,升級後瀏覽器不會留著昨天的 `app.js`。
 - 訂閱連結有到期日、可撤銷、會記錄上次讀取時間;透過 agent token 讀訂閱清單時只回前缀,不回完整 token。
 - **沒有做的**:TOTP/二階段驗證、動作審計(audit log)、HTTPS、每帳號資料量上限、
@@ -228,7 +231,8 @@ db.prepare('vacuum into ?').run('backup-'+new Date().toISOString().slice(0,10)+'
 ## 已知限制
 
 1. 沒有原生行動 app,也沒有伺服器推播;手機靠瀏覽器或 ICS 訂閱(見上)。
-2. `RRULE` 是子集:不吃 `BYSETPOS`、`WKST`,時區型 `UNTIL`(只用 UTC 形式)。
+2. `RRULE` 是子集:子集外的屬性(`BYSETPOS`、`WKST`、`BYWEEKNO`、floating 形式的 `UNTIL`、
+   `YEARLY` 的 `BYDAY`/`BYMONTHDAY`)會被**明確拒絕**(`bad_rrule`),不是靜默忽略。
    `WEEKLY` 的序數前綴(`2MO`)會被當成該星期幾處理,只有 `MONTHLY` 才真的解析序數。
 3. 全天行程以「建立者時區的日期」存成 UTC 午夜。跨時區共用的家庭成員看到的日期可能差一天
    —— 這是把全天事件當日期處理的代價,不是 bug,但要知道。

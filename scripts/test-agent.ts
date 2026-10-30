@@ -6,7 +6,7 @@ import { freshStore } from '../src/db.ts';
 import { Client, ApiError } from '../src/client.ts';
 import * as T from '../src/agent-tools.ts';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -388,6 +388,22 @@ ok('cli error carries a code and hint',
 
 const cliDate = await run(['dateinfo', '--date', '2026-11-02', '--json']);
 ok('cli dateinfo', cliDate.code === 0 && JSON.parse(cliDate.out).holiday.name === '追思節', cliDate.out.slice(0, 200));
+
+const cliQuick1 = await run(['quick', '--calendar', calId, '後天 上午9點 CLI冪等測試', '--request-id', 'k-cli-quick-1', '--json']);
+const cliQuick2 = await run(['quick', '--calendar', calId, '後天 上午9點 CLI冪等測試', '--request-id', 'k-cli-quick-1', '--json']);
+ok('cli quick --request-id replays the first result',
+  cliQuick1.code === 0 && cliQuick2.code === 0 && !!JSON.parse(cliQuick1.out).created
+    && JSON.parse(cliQuick1.out).created === JSON.parse(cliQuick2.out).created,
+  cliQuick1.out.slice(0, 160) + ' | ' + cliQuick2.out.slice(0, 160));
+
+const cliBatchPath = join(dir, 'cli-batch.json');
+writeFileSync(cliBatchPath, JSON.stringify([{ title: 'CLI batch 冪等', start: '2026-11-21 10:00' }]));
+const cliBatch1 = await run(['batch', '--calendar', calId, '--file', cliBatchPath, '--request-id', 'k-cli-batch-1', '--json']);
+const cliBatch2 = await run(['batch', '--calendar', calId, '--file', cliBatchPath, '--request-id', 'k-cli-batch-1', '--json']);
+ok('cli batch --request-id replays the first result',
+  cliBatch1.code === 0 && cliBatch2.code === 0 && JSON.parse(cliBatch1.out).created === 1
+    && JSON.stringify(JSON.parse(cliBatch1.out).ids) === JSON.stringify(JSON.parse(cliBatch2.out).ids),
+  cliBatch1.out.slice(0, 160) + ' | ' + cliBatch2.out.slice(0, 160));
 
 // ---- MCP stdio subprocess ----
 const mcp = spawn(process.execPath, [join(ROOT, 'src', 'mcp.ts'), '--base', base, '--token', token2, '--calendar', calId], {

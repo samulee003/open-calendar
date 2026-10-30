@@ -62,6 +62,20 @@ ok('non-member cannot read calendar', (await req('GET', `/api/calendars/${cid}/e
 ok('join by code', (await req('POST', '/api/join', { code: inv.data.code }, cb)).status === 200);
 ok('members listed', (await req('GET', `/api/calendars/${cid}/members`, undefined, cb)).data.length === 2);
 
+// ---- colours are hex literals only (they land in style attributes) ----
+ok('calendar colour must be a hex literal',
+  (await req('POST', '/api/calendars', { name: '壞色', color: 'red;position:fixed' }, ca)).status === 400);
+ok('label colour must be a hex literal',
+  (await req('POST', `/api/calendars/${cid}/labels`, { name: '壞', color: '#fff" onmouseover="x' }, ca)).status === 400);
+ok('virtual member colour must be a hex literal',
+  (await req('POST', `/api/calendars/${cid}/virtual-members`, { name: '壞色成員', color: 'blue}' }, ca)).status === 400);
+const vmOk = await req('POST', `/api/calendars/${cid}/virtual-members`, { name: '好色成員', color: '#abc123' }, ca);
+ok('virtual member accepts a valid hex colour', vmOk.status === 200 && !!vmOk.data.id, JSON.stringify(vmOk.data));
+ok('virtual member colour update must be hex too',
+  (await req('PUT', `/api/virtual-members/${vmOk.data.id}`, { color: 'javascript:alert(1)' }, ca)).status === 400);
+ok('a valid calendar colour is still accepted',
+  (await req('POST', '/api/calendars', { name: '好色日曆', color: '#a1b2c3' }, ca)).status === 200);
+
 // ---- single + batch creation ----
 const one = await req('POST', `/api/calendars/${cid}/events`, {
   title: '大提琴課', start_at: D('2026-11-05T10:00:00Z'), end_at: D('2026-11-05T10:50:00Z'), reminders: [30],
@@ -69,6 +83,10 @@ const one = await req('POST', `/api/calendars/${cid}/events`, {
 ok('create single event', one.status === 200 && !!one.data.id);
 ok('title required', (await req('POST', `/api/calendars/${cid}/events`, { start_at: D('2026-11-05T10:00:00Z') }, ca)).status === 400);
 ok('bad rrule rejected', (await req('POST', `/api/calendars/${cid}/events`, { title: 'x', start_at: 1, rrule: 'FREQ=NOPE' }, ca)).status === 400);
+ok('unsupported rrule property is rejected, not ignored',
+  (await req('POST', `/api/calendars/${cid}/events`, { title: 'x', start_at: 1, rrule: 'FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1' }, ca)).status === 400);
+ok('YEARLY with BYDAY is rejected, not silently ignored',
+  (await req('POST', `/api/calendars/${cid}/events`, { title: 'x', start_at: 1, rrule: 'FREQ=YEARLY;BYMONTH=3;BYDAY=2MO' }, ca)).status === 400);
 ok('end before start rejected', (await req('POST', `/api/calendars/${cid}/events`, { title: 'x', start_at: 5000, end_at: 1000 }, ca)).status === 400);
 
 const batch = Array.from({ length: 6 }, (_, i) => ({
@@ -218,6 +236,12 @@ ok('crlf title survives as escaped text', body.split('\r\n').some((l) => l.inclu
   ok('every vevent has UID, DTSTAMP, SUMMARY and DTSTART',
     blocks.length > 0 && blocks.every((b) => ['UID:', 'DTSTAMP:', 'SUMMARY:', 'DTSTART'].every((p) => b.some((l) => l.startsWith(p)))),
     JSON.stringify(blocks.find((b) => !b.some((l) => l.startsWith('DTSTART')))?.slice(0, 3) ?? ''));
+  const uidOf = (b: string[]) => b.find((l) => l.startsWith('UID:')) ?? '';
+  const overrideBlock = blocks.find((b) => b.some((l) => l.startsWith('RECURRENCE-ID')));
+  const masterBlock = blocks.find((b) => b.some((l) => l.startsWith('RRULE:')));
+  ok('override vevent shares the series UID (RECURRENCE-ID pairs it)',
+    !!overrideBlock && !!masterBlock && uidOf(overrideBlock) === uidOf(masterBlock) && !body.includes('-ov-'),
+    `${uidOf(overrideBlock ?? [])} vs ${uidOf(masterBlock ?? [])}`);
   ok('ics uses CRLF line breaks', body.includes('\r\n') && !body.includes('\n\r'));
 }
 ok('bad subscription token 404', (await fetch(`${base}/ics/nope.ics`)).status === 404);
@@ -303,6 +327,8 @@ ok('static ui is revalidated, not cached stale', /no-cache/.test(idxCache), idxC
 const junk = await fetch(`${base}/api/events/%zz`);
 ok('malformed percent-escape answered instead of crashing', junk.status === 404 || junk.status === 400, `got ${junk.status}`);
 ok('server still serves after the malformed request', (await fetch(`${base}/api/me`)).status === 401);
+ok('malformed cookie value does not crash the request',
+  (await fetch(`${base}/api/me`, { headers: { cookie: 'sid=%E0%A4' } })).status === 401);
 
 // ---- logout really ends the session ----
 const out1 = await req('POST', '/api/signup', { email: 'bye@example.com', name: 'B', password: 'password1' });

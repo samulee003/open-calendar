@@ -237,7 +237,9 @@ export function icsForCalendar(name: string, events: IcsRow[], overrides: IcsOve
     const rid = allDay ? dateOnly(Number(o.orig_start)) : wallStamp(Number(o.orig_start), zone);
     lines.push(
       'BEGIN:VEVENT',
-      `UID:${master.id}-ov-${o.orig_start}@shared-calendar`,
+      // Exceptions share the master's UID: RECURRENCE-ID is what pairs them to
+      // the series, and a distinct UID made strict clients show both copies.
+      `UID:${master.id}@shared-calendar`,
       // The parameter belongs before the colon: RECURRENCE-ID;TZID=…:<value>
       allDay ? `RECURRENCE-ID;VALUE=DATE:${rid}` : `RECURRENCE-ID;TZID=${zone}:${rid}`,
       `DTSTAMP:${stampUTC(Number(master.created_at))}`,

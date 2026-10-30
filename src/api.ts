@@ -122,6 +122,20 @@ function intOrNull(v: unknown): number | null {
   return Number.isFinite(n) ? Math.trunc(n) : null;
 }
 
+// Colours end up interpolated into style attributes in the web UI, so only a
+// plain hex literal is acceptable — no extra CSS declarations from a "colour".
+function colourOf(raw: unknown, fallback: string): string {
+  if (raw === undefined || raw === null || raw === '') return fallback;
+  const s = String(raw).trim();
+  if (!/^#[0-9a-f]{3,8}$/i.test(s)) throw new HttpError(400, 'bad_color', { field: 'color' });
+  return s;
+}
+
+/** Every write keeps updated_at strictly increasing, even within one millisecond. */
+function bumpUpdatedAt(previous: unknown): number {
+  return Math.max(Date.now(), Number(previous ?? 0) + 1);
+}
+
 function detailOf(ctx: Ctx): 'summary' | 'full' {
   return ctx.query.get('detail') === 'full' ? 'full' : 'summary';
 }
@@ -313,8 +327,10 @@ export const routes = {
     if (ctx.store.get('select id from users where email = ?', email)) throw new HttpError(409, 'email_taken');
     const [hash, salt] = hashPass(password);
     const id = newId('usr');
+    // A garbage tz here would later crash quick-add's wall-clock rendering.
+    const tz = isValidZone(ctx.body?.tz) ? String(ctx.body.tz) : 'UTC';
     ctx.store.run('insert into users (id, email, name, pass_hash, pass_salt, tz, created_at) values (?,?,?,?,?,?,?)',
-      id, email, name.slice(0, 100), hash, salt, String(ctx.body?.tz ?? 'UTC'), Date.now());
+      id, email, name.slice(0, 100), hash, salt, tz, Date.now());
     const personal = newId('cal');
     ctx.store.run('insert into calendars (id, name, color, owner_id, created_at) values (?,?,?,?,?)',
       personal, `${name} 的日曆`, '#4a90d9', id, Date.now());
@@ -402,7 +418,7 @@ export const routes = {
     if (!name) throw new HttpError(400, 'name_required');
     const id = newId('cal');
     ctx.store.run('insert into calendars (id, name, color, owner_id, created_at) values (?,?,?,?,?)',
-      id, name.slice(0, 120), String(ctx.body?.color ?? '#4a90d9'), String(u.id), Date.now());
+      id, name.slice(0, 120), colourOf(ctx.body?.color, '#4a90d9'), String(u.id), Date.now());
     ctx.store.run('insert into members (calendar_id, user_id, role, joined_at) values (?,?,?,?)', id, String(u.id), 'owner', Date.now());
     return { id };
   },
@@ -445,7 +461,7 @@ export const routes = {
     const name = String(ctx.body?.name ?? '').trim();
     if (!name) throw new HttpError(400, 'name_required');
     const info = ctx.store.run('insert into labels (calendar_id, name, color, position) values (?,?,?,?)',
-      ctx.params.id, name.slice(0, 60), String(ctx.body?.color ?? '#888888'),
+      ctx.params.id, name.slice(0, 60), colourOf(ctx.body?.color, '#888888'),
       Number(ctx.store.get('select count(*) as n from labels where calendar_id = ?', ctx.params.id)?.n ?? 0));
     return { id: Number(info.lastInsertRowid) };
   },
@@ -475,7 +491,7 @@ export const routes = {
     ctx.store.run(
       `insert into virtual_members (id, calendar_id, name, account_type, color, birthday, shows_birthday, created_at)
        values (?,?,?,?,?,?,?,?)`,
-      id, ctx.params.id, name.slice(0, 60), type, String(ctx.body?.color ?? '#888888').slice(0, 20),
+      id, ctx.params.id, name.slice(0, 60), type, colourOf(ctx.body?.color, '#888888'),
       birthday, ctx.body?.shows_birthday ? 1 : 0, Date.now());
     return { id, name: name.slice(0, 60), account_type: type };
   },
@@ -495,7 +511,7 @@ export const routes = {
     ctx.store.run(
       'update virtual_members set name=?, account_type=?, color=?, birthday=?, shows_birthday=? where id=?',
       name.slice(0, 60), type,
-      ctx.body?.color !== undefined ? String(ctx.body.color).slice(0, 20) : String(vm.color),
+      ctx.body?.color !== undefined ? colourOf(ctx.body.color, String(vm.color)) : String(vm.color),
       birthday,
       ctx.body?.shows_birthday !== undefined ? (ctx.body.shows_birthday ? 1 : 0) : Number(vm.shows_birthday),
       ctx.params.id);
@@ -697,7 +713,7 @@ export const routes = {
       attendees: ctx.body?.attendees ?? [],
       tz: ctx.body?.tz ?? e.tz,
     }, String(e.tz ?? 'UTC'));
-    const nextUpdatedAt = Math.max(Date.now(), Number(e.updated_at ?? 0) + 1);
+    const nextUpdatedAt = bumpUpdatedAt(e.updated_at);
     ctx.store.run(
       `update events set title=?, note=?, location=?, all_day=?, start_at=?, end_at=?, label_id=?, rrule=?, updated_at=?
        where id=?`, ev.title, ev.note, ev.location, ev.allDay ? 1 : 0, ev.start_at, ev.end_at,
@@ -732,14 +748,14 @@ export const routes = {
       const tz = String(e.tz || 'UTC');
       const ex = new Set<string>([...(JSON.parse(String(e.exdates || '[]')) as unknown[]).map(String), dayKey(occ, tz)]);
       ctx.store.run('update events set exdates = ?, updated_at = ? where id = ?',
-        JSON.stringify([...ex].sort()), Date.now(), ctx.params.id);
+        JSON.stringify([...ex].sort()), bumpUpdatedAt(e.updated_at), ctx.params.id);
       return { scope: 'occurrence', day: dayKey(occ, tz) };
     }
 
     // future: cut the series at the day before this occurrence, keep this one onward as a new event
     const until = new Date(occ - DAY).toISOString().replace(/[-:]/g, '').slice(0, 8) + 'T235959Z';
     const oldRule = String(e.rrule).replace(/;UNTIL=[^;]*/g, '');
-    ctx.store.run('update events set rrule = ?, updated_at = ? where id = ?', `${oldRule};UNTIL=${until}`, Date.now(), ctx.params.id);
+    ctx.store.run('update events set rrule = ?, updated_at = ? where id = ?', `${oldRule};UNTIL=${until}`, bumpUpdatedAt(e.updated_at), ctx.params.id);
     return { scope: 'future', until };
   },
 
@@ -763,7 +779,7 @@ export const routes = {
     if (!e) throw new HttpError(404, 'no_such_event');
     mustView(ctx, String(e.calendar_id));
     if (e.deleted_at == null) return { restored: false, already_visible: true };
-    ctx.store.run('update events set deleted_at = null, updated_at = ? where id = ?', Date.now(), ctx.params.id);
+    ctx.store.run('update events set deleted_at = null, updated_at = ? where id = ?', bumpUpdatedAt(e.updated_at), ctx.params.id);
     return { restored: true };
   },
 
@@ -779,7 +795,7 @@ export const routes = {
     const ex = (JSON.parse(String(e.exdates || '[]')) as unknown[]).map(String);
     if (!ex.includes(day)) return { restored: false, day };
     ctx.store.run('update events set exdates = ?, updated_at = ? where id = ?',
-      JSON.stringify(ex.filter((d) => d !== day).sort()), Date.now(), ctx.params.id);
+      JSON.stringify(ex.filter((d) => d !== day).sort()), bumpUpdatedAt(e.updated_at), ctx.params.id);
     return { restored: true, day };
   },
 

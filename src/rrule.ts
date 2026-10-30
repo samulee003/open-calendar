@@ -2,8 +2,10 @@
 // BYDAY, BYMONTHDAY (incl. -1 = last day), BYMONTH, COUNT, UNTIL.
 //
 // Each occurrence is re-projected through the event's own IANA zone (wallToUtc),
-// so a series stays on its wall-clock weekday across a DST transition. Unsupported
-// properties (BYSETPOS, WKST, TZID-form UNTIL) are documented in README "已知限制".
+// so a series stays on its wall-clock weekday across a DST transition. Properties
+// this subset cannot expand faithfully (BYSETPOS, WKST, BYWEEKNO, YEARLY's BYDAY…)
+// are rejected by parseRRule — the caller gets a loud bad_rrule instead of a
+// silently wrong series.
 
 import { wallParts, wallToUtc } from './tz.ts';
 
@@ -11,6 +13,9 @@ const DAY_MS = 86400000;
 const WEEKDAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 const MAX_OCCURRENCES = 5000;
 const MAX_SCAN_DAYS = 4000;
+// Anything outside this set cannot be expanded faithfully; refusing beats a
+// half-ignored rule that quietly means something else.
+const SUPPORTED = new Set(['FREQ', 'INTERVAL', 'BYDAY', 'BYMONTHDAY', 'BYMONTH', 'COUNT', 'UNTIL']);
 
 export type Rule = {
   freq: 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'YEARLY';
@@ -32,15 +37,22 @@ export function parseRRule(text: string): Rule | null {
   }
   const freq = parts.FREQ;
   if (!freq || !['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'].includes(freq)) return null;
+  for (const key of Object.keys(parts)) if (!SUPPORTED.has(key)) return null;
+  // YEARLY here only repeats the anchor's month/day; BYDAY/BYMONTHDAY would be
+  // silently meaningless, so refuse them instead of misreading the rule.
+  if (freq === 'YEARLY' && (parts.BYDAY || parts.BYMONTHDAY)) return null;
+  if (parts.INTERVAL !== undefined && !/^\d+$/.test(parts.INTERVAL)) return null;
+  if (parts.COUNT !== undefined && !/^\d+$/.test(parts.COUNT)) return null;
 
   let until: number | null = null;
   if (parts.UNTIL) {
     const u = parts.UNTIL;
-    const y = +u.slice(0, 4), mo = +u.slice(4, 6) - 1, d = +u.slice(6, 8);
-    const hh = u.length >= 15 ? +u.slice(9, 11) : 23;
-    const mm = u.length >= 17 ? +u.slice(11, 13) : 59;
-    const ss = u.length >= 19 ? +u.slice(13, 15) : 59;
-    if (Number.isFinite(y) && Number.isFinite(d)) until = Date.UTC(y, mo, d, hh, mm, ss);
+    // Only the date form and the UTC datetime form; a floating datetime would be
+    // silently misread as UTC, so it is refused instead.
+    if (!/^\d{8}(T\d{6}Z)?$/.test(u)) return null;
+    until = u.length === 16
+      ? Date.UTC(+u.slice(0, 4), +u.slice(4, 6) - 1, +u.slice(6, 8), +u.slice(9, 11), +u.slice(11, 13), +u.slice(13, 15))
+      : Date.UTC(+u.slice(0, 4), +u.slice(4, 6) - 1, +u.slice(6, 8), 23, 59, 59);
   }
 
   return {

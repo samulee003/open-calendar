@@ -9,6 +9,11 @@
 // Behaviour boundaries (which expressions matter, how a bare weekday resolves, what
 // defaults apply) were studied from a shipping calendar assistant; the rules,
 // structures and code here are written from scratch.
+//
+// Every phrase is read in `opts.tz` (defaulting to the runtime's local zone):
+// "明天 15:00" is tomorrow at 15:00 *there*, wherever the server happens to run.
+
+import { wallParts, wallToUtc, isValidZone } from './tz.ts';
 
 const CN_DIGITS: Record<string, number> = {
   零: 0, 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
@@ -34,6 +39,7 @@ export type QuickAdd = {
 
 export type ParseOptions = {
   now: Date;
+  /** IANA zone the phrases are read in; defaults to the runtime's local zone. */
   tz?: string;
   defaultHour?: number;
   defaultDurationMinutes?: number;
@@ -58,19 +64,31 @@ function utcMidnight(y: number, mo: number, d: number): number {
   return Date.UTC(y, mo - 1, d);
 }
 
-function addDays(d: Date, n: number): Date {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+type YMD = { y: number; mo: number; d: number };
+
+/** A calendar day as a zone-free day index (days since 1970-01-01). */
+function dayIndexOf(t: YMD): number { return Date.UTC(t.y, t.mo - 1, t.d) / 86400000; }
+
+function fromDayIndex(n: number): YMD {
+  const dt = new Date(n * 86400000);
+  return { y: dt.getUTCFullYear(), mo: dt.getUTCMonth() + 1, d: dt.getUTCDate() };
 }
 
-function weekdayOf(d: Date): number { return d.getDay(); }
+/** Weekday of a day index — the weekday of a calendar date is zone-independent. */
+function weekdayAt(n: number): number { return new Date(n * 86400000).getUTCDay(); }
 
-/** Monday-first index used in "下週三" style phrases: 0=Mon … 6=Sun. */
-function mondayIndex(d: Date): number { return (weekdayOf(d) + 6) % 7; }
+function lastDayOf(y: number, mo: number): number { return new Date(Date.UTC(y, mo, 0)).getUTCDate(); }
 
 const RRULE_DAY = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 
+// The runtime's own zone, resolved once: the fallback when opts.tz is absent/invalid.
+const LOCAL_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+
 export function parseQuickAdd(input: string, opts: ParseOptions): QuickAdd {
   const now = opts.now;
+  const tz = isValidZone(opts.tz) ? String(opts.tz) : LOCAL_ZONE;
+  const today = wallParts(now.getTime(), tz);
+  const todayIdx = dayIndexOf(today);
   const defaultHour = opts.defaultHour ?? 9;
   const defaultDuration = opts.defaultDurationMinutes ?? 60;
   const notes: string[] = [];
@@ -118,9 +136,11 @@ export function parseQuickAdd(input: string, opts: ParseOptions): QuickAdd {
   }
 
   // ---------- date ----------
-  let date: Date | null = null;
+  // Dates are bare calendar days compared as day indices, so no comparison can
+  // ever mix zones (a local-midnight-vs-UTC-midnight compare once rolled every
+  // same-day "M月D日" input into next year on a UTC+8 server).
+  let date: YMD | null = null;
   let dateNote = '';
-  let lowDate = false;
 
   const iso = /(\d{4})-(\d{1,2})-(\d{1,2})/.exec(text);
   const slash = /(\d{4})\/(\d{1,2})\/(\d{1,2})/.exec(text);
@@ -132,59 +152,58 @@ export function parseQuickAdd(input: string, opts: ParseOptions): QuickAdd {
 
   if (iso || slash) {
     const m = (iso ?? slash)!;
-    date = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    date = { y: Number(m[1]), mo: Number(m[2]), d: Number(m[3]) };
     text = text.replace(m[0], ' ');
     dateNote = `${m[1]}-${pad(Number(m[2]))}-${pad(Number(m[3]))}`;
   } else if (cnFull) {
-    date = new Date(Number(cnFull[1]), Number(cnFull[2]) - 1, Number(cnFull[3]));
+    date = { y: Number(cnFull[1]), mo: Number(cnFull[2]), d: Number(cnFull[3]) };
     text = text.replace(cnFull[0], ' ');
     dateNote = `${cnFull[1]}-${pad(Number(cnFull[2]))}-${pad(Number(cnFull[3]))}`;
   } else if (cnShort) {
-    date = new Date(now.getFullYear(), Number(cnShort[1]) - 1, Number(cnShort[2]));
-    // A bare "3月5日" that already passed refers to next year.
-    if (date.getTime() < utcMidnight(now.getFullYear(), now.getMonth() + 1, now.getDate())) {
-      date = new Date(now.getFullYear() + 1, Number(cnShort[1]) - 1, Number(cnShort[2]));
-    }
+    // A bare "3月5日" that already passed refers to next year; today itself is
+    // still today.
+    let y = today.y;
+    if (dayIndexOf({ y, mo: Number(cnShort[1]), d: Number(cnShort[2]) }) < todayIdx) y += 1;
+    date = { y, mo: Number(cnShort[1]), d: Number(cnShort[2]) };
     text = text.replace(cnShort[0], ' ');
-    dateNote = `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+    dateNote = `${pad(date.mo)}-${pad(date.d)}`;
   } else if (rel) {
     const offset = { 今天: 0, 今晚: 0, 明天: 1, 明晚: 1, 後天: 2, 大後天: 3, 昨天: -1 }[rel[1]] ?? 0;
-    date = addDays(now, offset);
+    date = fromDayIndex(todayIdx + offset);
     text = text.replace(rel[0], ' ');
     dateNote = rel[1];
   } else if (week) {
-    const mondayBased = mondayIndex(now);
+    const mondayBased = (weekdayAt(todayIdx) + 6) % 7;
     const target = WEEKDAY_INDEX[week[2]];
     const targetMonday = (target + 6) % 7;
     const weekShift = week[1].startsWith('下下') ? 2 : week[1].startsWith('下') ? 1 : 0;
-    const baseMonday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - mondayBased + weekShift * 7);
-    date = addDays(baseMonday, targetMonday);
-    if (weekShift === 0 && date.getTime() < utcMidnight(now.getFullYear(), now.getMonth() + 1, now.getDate())) {
-      date = addDays(date, 7);
+    let idx = todayIdx - mondayBased + weekShift * 7 + targetMonday;
+    if (weekShift === 0 && idx < todayIdx) {
+      idx += 7;
       dateNote = `下週${week[2]}`;
     } else {
       dateNote = `${week[1]}${week[2]}`;
     }
+    date = fromDayIndex(idx);
     text = text.replace(week[0], ' ');
   } else if (bareWeekday) {
     const target = WEEKDAY_INDEX[bareWeekday[1]];
-    const delta = (target - weekdayOf(now) + 7) % 7 || 7;
-    date = addDays(now, delta);
+    const delta = (target - weekdayAt(todayIdx) + 7) % 7 || 7;
+    date = fromDayIndex(todayIdx + delta);
     text = text.replace(bareWeekday[0], ' ');
     dateNote = `下個${bareWeekday[1] === '天' ? '日' : bareWeekday[1]}`;
   } else if (anchorWeekday !== null && rrule) {
     // "每週四" alone: start at the next occurrence of that weekday.
-    const delta = (anchorWeekday - weekdayOf(now) + 7) % 7 || 7;
-    date = addDays(now, delta);
+    const delta = (anchorWeekday - weekdayAt(todayIdx) + 7) % 7 || 7;
+    date = fromDayIndex(todayIdx + delta);
     dateNote = `下個${['日', '一', '二', '三', '四', '五', '六'][anchorWeekday]}`;
   } else if (everyMonth) {
     // "每月 15 號" alone: start at the next 15th.
     const target = Number(everyMonth[1]);
-    let y = now.getFullYear();
-    let m = now.getMonth();
-    if (now.getDate() >= target) m += 1;
-    const lastDay = new Date(y, m + 1, 0).getDate();
-    date = new Date(y, m, Math.min(target, lastDay));
+    let y = today.y, mo = today.mo;
+    if (today.d >= target) mo += 1;
+    if (mo > 12) { mo = 1; y += 1; }
+    date = { y, mo, d: Math.min(target, lastDayOf(y, mo)) };
     dateNote = `每月 ${target} 號`;
   }
 
@@ -253,19 +272,20 @@ export function parseQuickAdd(input: string, opts: ParseOptions): QuickAdd {
     unparsed.push('沒有時間');
   }
 
-  const day = date ?? addDays(now, 0);
-  const y = day.getFullYear(), mo = day.getMonth() + 1, d = day.getDate();
+  const dayYmd: YMD = date ?? { y: today.y, mo: today.mo, d: today.d };
+  const y = dayYmd.y, mo = dayYmd.mo, d = dayYmd.d;
 
   let start_at: number;
   let end_at: number;
   if (allDay) {
+    // All-day stays a UTC-midnight date (the storage convention for VALUE=DATE).
     start_at = utcMidnight(y, mo, d);
     end_at = start_at + 86400000;
   } else {
     const sm = startMinutes ?? defaultHour * 60;
     const em = endMinutes ?? sm + defaultDuration;
-    start_at = new Date(y, mo - 1, d, Math.floor(sm / 60), sm % 60).getTime();
-    end_at = new Date(y, mo - 1, d, Math.floor(em / 60) % 24, em % 60).getTime() + (em >= 1440 ? 86400000 : 0);
+    start_at = wallToUtc(y, mo, d, Math.floor(sm / 60), sm % 60, 0, tz);
+    end_at = wallToUtc(y, mo, d, Math.floor(em / 60) % 24, em % 60, 0, tz) + (em >= 1440 ? 86400000 : 0);
   }
 
   return {

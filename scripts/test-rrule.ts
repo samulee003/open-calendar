@@ -143,5 +143,22 @@ check('weekly BYDAY=2MO still matches Mondays',
   expand('RRULE:FREQ=WEEKLY;BYDAY=2MO', D('2026-01-05T00:00:00Z'), 3600000, D('2026-01-01'), D('2026-01-31')).map(iso),
   ['2026-01-05', '2026-01-12', '2026-01-19', '2026-01-26']);
 
+// 18. properties this subset cannot expand faithfully are refused outright —
+// a half-ignored BYSETPOS would quietly mean something else.
+check('parse rejects BYSETPOS', parseRRule('FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1'), null);
+check('parse rejects WKST', parseRRule('FREQ=WEEKLY;BYDAY=MO;WKST=SU'), null);
+check('parse rejects BYWEEKNO', parseRRule('FREQ=WEEKLY;BYWEEKNO=23'), null);
+check('parse rejects a floating UNTIL datetime', parseRRule('FREQ=DAILY;UNTIL=20260306T000000'), null);
+check('a UTC UNTIL datetime parses to the exact instant',
+  parseRRule('FREQ=DAILY;UNTIL=20261105T143000Z')?.until, D('2026-11-05T14:30:00Z'));
+check('a date-only UNTIL keeps its 23:59:59 reading',
+  parseRRule('FREQ=DAILY;UNTIL=20260306')?.until, D('2026-03-06T23:59:59Z'));
+check('yearly with BYDAY is refused, not silently ignored', parseRRule('FREQ=YEARLY;BYMONTH=3;BYDAY=2MO'), null);
+check('yearly with BYMONTHDAY is refused too', parseRRule('FREQ=YEARLY;BYMONTHDAY=15'), null);
+check('non-numeric INTERVAL is refused', parseRRule('FREQ=DAILY;INTERVAL=abc'), null);
+check('fractional INTERVAL is refused', parseRRule('FREQ=DAILY;INTERVAL=2.5'), null);
+check('non-numeric COUNT is refused', parseRRule('FREQ=DAILY;COUNT=x'), null);
+check('lowercase keys still parse after normalisation', parseRRule('freq=daily;count=3')?.count, 3);
+
 console.log(fails ? `\n${fails} FAILED` : '\nall passed');
 process.exitCode = fails ? 1 : 0;

@@ -86,7 +86,7 @@ MCP 的 `tools/list` 另外帶 `outputSchema` 與 `annotations`(readOnly / destr
 
 - `rrule` 收 RFC 5545 字串,可不含 `RRULE:` 前綴。支援
   `FREQ=DAILY|WEEKLY|MONTHLY|YEARLY`、`INTERVAL`、`BYDAY`、`BYMONTHDAY`(含 `-1`)、`BYMONTH`、`COUNT`、`UNTIL`。
-  不支援 `BYSETPOS`、`WKST`、時區型 `UNTIL`。
+  子集外的屬性(`BYSETPOS`、`WKST`、`BYWEEKNO`、floating 形式的 `UNTIL`、`YEARLY` 的 `BYDAY`/`BYMONTHDAY`)會回 `bad_rrule`,**不會靜默忽略**。
 - 展開在**事件時區的牆上時間**做,所以「台北週一 01:00」的課不會被 UTC 拉到週日/週二。
 - 三種刪除,語意不同:
   - `scope=all` 整串(可 `restore_event` 還原)。
@@ -109,6 +109,7 @@ MCP 的 `tools/list` 另外帶 `outputSchema` 與 `annotations`(readOnly / destr
   **部分失敗是正常的**,請讀 `failed` 而不是假設全成功。
 - `quick_add` 在解析沒把握時回 `needs_confirmation: true` 而**不會寫入**。
   此時該問使用者,而不是自己猜;確認後帶 `confirm: true` 重送。
+  自然語言以 `tz` 參數(缺省為帳號時區)的**牆上時間**解讀,「明天」是使用者的明天,與伺服器時區無關。
 - 大量破壞性操作(例如「把下學期的課都刪掉」)前先 `list_events` 列出會動到哪些筆,
   取得人類確認,再逐一或批次處理。
 
@@ -173,7 +174,7 @@ MCP 的 `tools/list` 另外帶 `outputSchema` 與 `annotations`(readOnly / destr
 
 ```bash
 export PATH="/d/rea-toolchain/node-v24.18.0-win-x64:$PATH"   # 本機 Node 24
-bash scripts/check.sh          # 七組全跑(335 條斷言)
+bash scripts/check.sh          # 七組全跑(366 條斷言)
 NODE=/path/to/node bash scripts/check.sh
 node scripts/selftest.ts       # 單跑一組
 node --experimental-strip-types ...   # 不需要,Node 24 直接跑 .ts
