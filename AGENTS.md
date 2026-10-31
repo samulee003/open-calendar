@@ -5,7 +5,8 @@
 - **A 部:操作這個日曆的 agent**(用 MCP / CLI / REST 幫使用者排行程)。
 - **B 部:改這個程式碼的 agent**(修 bug、加功能、跑測試)。
 
-人類讀者請先看 [README.md](README.md)。
+人類讀者請看 [README.md](README.md) 的「第一部分:給人類」;
+README 的「第二部分:給 AI Agent」只是本檔的入口摘要,**兩邊有出入以本檔為準**。
 
 ---
 
@@ -262,7 +263,7 @@ public/app.js  ──►  src/server.ts  ──►  src/api.ts(路由=唯一驗�
    注意 `node --check` 不支援 `.ts`,只能驗 `.js`。
 3. 動到 ICS:抓一份實際輸出,檢查 `BEGIN:VTIMEZONE`、`DTSTART;TZID=`、`DTEND` 是否正確。
 4. 動到 token/scope/冪等:`scripts/test-agent.ts` 涵蓋了拒權、重送、409、還原,別繞過它。
-5. 更新 README(人類)與本檔(agent)中受影響的事實:工具數、指令、限制。
+5. 更新 README(第一部分給人類、第二部分是 agent 入口摘要)與本檔中受影響的事實:工具數、指令、限制。
    兩者都要**如實**;沒做的功能寫在「刻意沒做的」裡,不要留在功能表。
 6. Conventional Commit 主旨(`feat:` / `fix:` / `docs:`),主旨描述行為而不是檔案。
 
